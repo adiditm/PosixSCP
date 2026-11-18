@@ -1,0 +1,1094 @@
+# Port status — single source of truth for progress
+
+Update this whenever a target starts/stops building. Verify by actually building.
+
+_Last updated: 2026-11-16 — **v0.3.0**: feature round on top of 6.7.1 + a pre-release bug hunt (see the last two sections): SSH tunnel, proxies, 2FA prompts, FTPS, Transfer Settings + resume, Find Files, directory sizes, Compare Directories, side-by-side file comparison — and the platform-layer bugs that end-to-end testing of those exposed (time zones / file timestamps, FindFirst, port forwarding, socket event loop). See "Feature round" at the end. **Verified on macOS arm64 only; the Linux build has not been rebuilt with these changes.**_
+
+_Previous header:_ Last updated: 2026-11-13 — engine synced to **WinSCP 6.7.1** (+ post-release fixes; PuTTY 0.85, neon 0.37.1, Expat 2.10.0). All 5 protocols re-verified end to end on macOS arm64 after the merge; see "Upstream sync to 6.7.1 + bug-hunt" at the end. **Linux build NOT re-verified after this sync.**_
+
+_Previous header:_ Last updated: 2026-06-22 (v0.1.0 public) — branded **FreeSCP** (native macOS/Linux port of WinSCP). All 5 protocols operational; GUI now has session tabs, directory tree, bookmarks, Copy/Move dialog, richer toolbar, app icon. See entries at bottom._
+
+## Current phase: 1.5 — compiling engine .cpp bodies (RTL bodies on demand)
+Phase 0 ✅ (foundation). Phase 1 ✅ (35/36 headers parse). Now: compile .cpp into libwinscpcore.
+
+## Buildable native targets
+| Target | Status | Notes |
+|--------|--------|-------|
+| `native/rtlcompat` (+ tests) | ✅ builds + ctest green | UnicodeString (1-based UTF-16) + Property<T> proxy proven on clang arm64, `-fshort-wchar` |
+| expat (vendored) | ✅ builds | `libexpat.a` arm64 via cmake, out-of-source (`/tmp/expat-build`) |
+| `native/ui-qt` skeleton | ✅ builds + launches | Qt6 dual-pane Commander silhouette; `winscp-qt.app` opens (verified offscreen) |
+
+## Done
+- Architecture analysis of engine / GUI / libs coupling (3 explorer passes).
+- CLAUDE.md, PLAN.md, STATUS.md.
+- `native/` CMake scaffold (top-level + rtlcompat + ui-qt).
+- Phase 0 proofs: rtlcompat keystone test, expat native build, Qt window builds+runs.
+
+## Toolchain (macOS arm64)
+- clang 14 (Xcode CLT) ✅, cmake 4 ✅, make ✅, git ✅, brew ✅
+- qt6 ✅ (`/opt/homebrew/opt/qt`), nasm ✅, autoconf/automake/libtool ✅, pkg-config ✅
+
+## Build commands
+```sh
+cd native && cmake -B build -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
+cmake --build build && ctest --test-dir build
+# run GUI skeleton: open build/ui-qt/winscp-qt.app
+```
+
+## Phase 1 progress (RTL compat layer)
+- ✅ RTL umbrella headers: vcl.h, System.hpp, SysUtils.hpp, Classes.hpp, Contnrs.hpp,
+  System.SyncObjs.hpp, System.Types.hpp, winscp/{rtldefs,wintypes,AnsiStrings,UnicodeString}.
+- ✅ `__property` solved: `native/tools/genprops.py` rewrites it to clang
+  `__declspec(property)` (`-fms-extensions`); CMake generates shadow headers for all 36 core
+  headers into `build/geninclude/core` (searched before source/core). Field targets (`Fxxx`)
+  get generated accessors; methods used directly; indexed + RO/WO handled.
+- ✅ `Common.h` (gateway header) parses; `Global.cpp` compiles into libwinscpcore.a.
+- ✅ Header-parse regression guard (`winscpcore_parsecheck`): **35/36** core headers parse
+  in the real CMake build. Only `PuttyIntf.h` is excluded — it needs the PuTTY backend
+  (putty.h assumes the Windows platform layer), which is Phase 3.
+- winscpcore_flags adds vendored include dirs (neon/src, expat/lib, libs3/inc) so WebDAV/S3
+  headers resolve.
+- RTL surface now covers: full string family + numeric/ANSI ctors; TVarRec/PResStringRec +
+  std exceptions + Variant; streams; DelphiSet `Set<>`; `System::DynamicArray` (TBytes);
+  TNotifyEvent/TThreadFunc/TShiftState; System:: & Classes:: aliases; Win typedefs
+  (UINT_PTR/WPARAM/LPARAM/INFINITE/VS_FIXEDFILEINFO/TShortCut); stubs Masks/Registry/
+  SysInit/Xml.XMLIntf/TCustomIniFile.
+
+## Build note for .cpp bodies (important)
+A `.cpp` in `source/core` resolves `#include "Foo.h"` to its **sibling raw header** first
+(C++ quote-include rule), bypassing the `__property`-rewritten shadow in `geninclude`. So to
+compile bodies, also emit shadow **.cpp** copies into `geninclude/core` (via genprops, which
+is a no-op on files without `__property`) and compile those, so their quoted includes hit the
+shadow headers in the same dir. The parse guard avoids this because its stubs live in `build/`.
+
+Per-file body surface is moderate (e.g. FileBuffer.cpp needs TStream ReadBuffer/WriteBuffer/
+Seek + soFromBeginning/soCurrent, RaiseLastOSError, EReadError/EWriteError, THandleStream
+ctor) — implement in rtlcompat on demand, leaf-first.
+
+## Phase 1.5 progress — compiled rtlcompat + first .cpp bodies
+- ✅ rtlcompat is now a **compiled static lib** (was header-only): Streams.cpp (full TStream
+  family, POSIX-backed), SysUtils.cpp (RaiseLastOSError, FileRead/FileWrite),
+  SysStrFuncs.cpp (IntToStr/StrToInt/Trim/UpperCase/SameText/...).
+- ✅ UnicodeString fleshed out: Trim/Upper/LowerCase, Delete/Insert, LastDelimiter,
+  IsDelimiter, Compare/CompareIC, SetLength, numeric+ANSI ctors. AnsiString Pos/Delete.
+- ✅ .cpp body build pipeline (shadow .cpp in geninclude). `Global.cpp`, `FileBuffer.cpp`, `NamedObjs.cpp` compile into libwinscpcore.a.
+- Added include for source/resource (TextsCore.h); StrUtils.hpp stubs.
+
+- ✅ Delphi containers implemented (TList/TObjectList/TStrings/TStringList + True/False).
+  NamedObjs.cpp compiles → 3 engine bodies in libwinscpcore.a (Global, FileBuffer, NamedObjs).
+
+- ✅ Delphi RTTI shim: `__classid`/`InheritsFrom`/`ClassName` via typeid + dynamic_cast
+  (winscp::classid<C>), no engine edits. String cross-conversions (UnicodeString<->Ansi/
+  Raw/UTF8, real UTF-8 codec). HKEY_* consts, Abort, StrUtils (IsDelimiter/StartsStr/EndsStr/
+  ReplaceStr/PosEx...). Windows-header stubs (shlobj/shlwapi/psapi/tlhelp32/windows/winsock).
+
+### Immediate next — Common.cpp (the hub, ~370 compile errors, mostly repeats)
+Needs, in order of leverage:
+1. ✅ **Format / FmtLoadStr** implemented (TVarRec varargs, %s/d/u/x/f, width/prec/flags,
+   positional) + ctest. Common.cpp 370->326 errors.
+2. **LoadStr / resource strings** — map int ident -> string. Source tables in source/resource;
+   start with a stub table, wire real strings later.
+3. **SEH** (`__try/__except`) — Windows structured exception handling, unsupported on clang.
+   Neutralize via macros (`#define __try if(true)` / `__except(x) ... `) or #ifdef.
+4. Win shell/process funcs (GetShellFolderPath, process enum) -> platform-adapter stubs.
+5. Date/time helpers (EncodeDate, Now, FormatDateTime) -> std::chrono.
+Then leaf data models (RemoteFiles/FileMasks/CopyParam/Option) fall quickly. Survey:
+`for f in /tmp/gi/*.cpp; do clang++ -fsyntax-only ...` (see build note above for the flags).
+
+## Next up (Phase 1 → 2/3): compile .cpp bodies
+1. Compile engine **.cpp bodies** leaf-first (FileMasks/CopyParam/RemoteFiles), implementing
+   RTL method bodies on demand: UnicodeString Format/Trim/IntToStr/case ops, TStringList,
+   TStream IO, TDateTime math.
+2. Phase 2 platform adapters as config/threading/socket bodies demand them (registry→file
+   storage, Winsock→BSD sockets, HANDLE→std::thread, FILETIME→chrono, FindFirst→std::fs).
+3. Phase 3: PuTTY unix backend → unblocks PuttyIntf + SecureShell/Sftp/Scp runtime.
+
+## Legend
+✅ done · 🟡 in progress · ⬜ todo · 🔴 blocked
+
+## Phase 1.5 update (.cpp bodies): 14/34 compile + link
+Compiling into libwinscpcore.a: Global, FileBuffer, NamedObjs, Common, FileSystems, Option,
+Usage, FileMasks, Bookmarks, FileInfo, CopyParam, FileOperationProgress, RemoteFiles,
+Exceptions. genprops now handles every __property form (field/method/indexed/index=N/const)
++ try/finally->RAII. rtlcompat ~full SysUtils/Classes/strings/dates/Format/containers.
+
+Remaining 20 split by workstream (NOT missing-RTL-symbol grind anymore):
+- Threading: Queue (+) need TThread/CreateThread/event adapter (Phase 2 threading).
+- Closures: Script needs __closure method-pointer fidelity.
+- PuTTY backend (Phase 3): Configuration, CoreMain, Cryptography, HierarchicalStorage,
+  SessionData, SessionInfo, SecureShell, SftpFileSystem, ScpFileSystem, FtpFileSystem,
+  PuttyIntf, Terminal (include PuttyIntf.h / putty.h).
+- neon/libs3 (Phase 4): NeonIntf, Http, WebDAVFileSystem, S3FileSystem.
+- Edge: KeyGen (#included into another TU), Security (Windows CryptoAPI cert chain -> OpenSSL).
+
+## Threading adapter done; __closure is the next deep blocker
+- ✅ Phase 2 threading: winscp/WinThreads.h + src/Threading.cpp — Win32 thread/event API
+  (StartThread/CreateEvent/SetEvent/WaitForSingleObject/ResumeThread/CloseHandle/...) over
+  std::thread + condition_variable, via an id-keyed handle table. Verified by a standalone
+  test (spawn/join/exit-code/event signal+wait). Queue's threading symbols now resolve.
+
+- 
+## __closure SOLVED (lightweight — no libclang needed)
+The feared third nut has a regex+template solution in genprops:
+- event typedefs `RET __fastcall (__closure *T)(ARGS)` -> `typedef std::function<RET(ARGS)> T`.
+- handler binds `X->OnXxx = Method;` -> `X->OnXxx = winscp::MakeClosure(this,
+  &remove_reference<decltype(*this)>::type::Method)` (no class name needed; decltype trick).
+- event-to-event copies, F-prefixed event fields, nulls, `OnceDone...` (On+lowercase) are
+  left alone; `On[A-Z]` distinguishes real events. Call-arg closures handled for known funcs
+  (RunAction). MakeClosure binds receiver via a lambda; std::function is callable/nullable
+  like the Delphi closure. Queue.cpp now compiles -> 15/34 in libwinscpcore.a.
+
+## Phase 6 start: visual Qt Commander (local panel = real ported engine)
+winscp-qt is now a dual-pane Commander. The local panel lists real directories via the
+ported engine (FindFirst/TSearchRec/path helpers) through native/ui-qt/enginebridge — the
+clean std-only boundary that isolates the engine's -fshort-wchar/UnicodeString ABI from Qt's
+QString. enginebridge.cpp is the only UI TU built with engine flags; main.cpp is plain Qt.
+This is the exact pattern the remote (SSH/SFTP) panel will use once the backend lands.
+Verified: app launches; bridge enumerates real files (dirs-first, "..", sizes).
+
+## Phase 3 START: PuTTY core compiles natively (149/150 C files)
+- Unix native/putty/include/platform.h supplies the PuTTY platform contract (types, timing,
+  THREADLOCAL, CRITICAL_SECTION->pthread, WPARAM/LPARAM, tree234 fwd, HELPCTX, clipboard
+  consts) INSTEAD of source/putty/windows/platform.h — no source edit.
+- libputtycore.a: 149 object files (all of crypto/ssh/utils/proxy/stubs) build on clang/arm64
+  with -DWINSCP -DMPEXT -DNO_GSSAPI -include platform.h. Excluded: windows/* (Win backend),
+  x86 hardware crypto (*-ni on arm), conf_data.c (one MSVC (int)"" const-init — revisit).
+- Backslash include `ssh\gss.h` handled with a literal-backslash stub (macOS allows it);
+  GSSAPI/Kerberos disabled for now.
+
+### Phase 3 remaining (the runtime backend — makes it LINK + connect)
+native/putty/src (not yet written): BSD-socket network.c (sk_new/connect/send/recv/close +
+WinSCP MPEXT sk_new extras), do_select/select_result + socket iteration over select()/poll,
+noise.c (/dev/urandom + rusage entropy), getticktime (mach_absolute_time), storage (random
+seed file; host keys via WinSCP), callback_set pthread sync. Then compile PuttyIntf.cpp/
+SecureShell.cpp (C++ engine side) and wire SecureShell's event loop to select() — at which
+point the remote panel can do a real SSH/SFTP connect.
+
+## Phase 3 backend: uxsupport/uxstubs/uxstore done (119 -> 31 undefined)
+native/putty/src (libputtyplatform): uxsupport.c (getticktime/noise/entropy, get_username,
+platform_default_*, CriticalSection->pthread, Filename/FontSpec), uxstubs.c (stricmp,
+UTF-8 charset mb/wc, no-agent, platform_new_connection->NULL), uxstore.c (settings stubs —
+WinSCP uses Conf; random-seed file real; host-key STUBBED -> Seat asks WinSCP). defs.h
+guarded so HAVE_AES_NI is x86-only (arm uses software AES; UPSTREAM-PATCHES).
+
+Remaining undefined when force-linking puttycore+puttyplatform: 31.
+- 16 = NETWORK (sk_init/sk_namelookup/sk_new/sk_addr_*/...) -> the last platform file
+  native/putty/src/uxnet.c (BSD sockets + Socket/Plug vtable + async connect + do_select).
+- 15 = engine-side (get_callback_set/get_seat_callback_set/get_log_*, modalfatalbox,
+  ldisc_echoedit_update, old_keyfile_warning, pinger_*, schedule_timer, expire_timer_context,
+  sshver, putty_section, in_memory_key_data, argon2_internal_vs) — provided by WinSCP
+  PuttyIntf.cpp/SecureShell.cpp/timing when the engine side compiles+links.
+
+### Next: uxnet.c (the network backend) -> then compile PuttyIntf.cpp/SecureShell.cpp ->
+wire SecureShell event loop to select() -> real SSH/SFTP connect from the remote panel.
+
+## Phase 3 platform backend COMPLETE — uxnet.c (network) done
+native/putty/src/uxnet.c: BSD-socket backend replacing windows/network.c — SockAddr via
+getaddrinfo, NetSocket Socket/Plug vtable, non-blocking async connect (multi-candidate),
+bufchain output buffering, set_frozen, select_result(fd,events) dispatch, do_select/
+first_socket/next_socket/socket_writable, and winscp_net_select(ms) (one select() pass the
+engine loop will call). Force-linking puttycore+puttyplatform now leaves only 16 undefined,
+ALL engine-side (provided by WinSCP when PuttyIntf.cpp/SecureShell.cpp compile): get_callback_
+set/get_seat_callback_set/get_log_callback_set/get_log_seat, modalfatalbox, ldisc_echoedit_
+update, old_keyfile_warning, pinger_*/schedule_timer/expire_timer_context (WinSCP timing),
+sshver/putty_section/in_memory_key_data/argon2_internal_vs.
+
+### Phase 3 step 2 (next): compile the engine SSH side
+PuttyIntf.cpp + SecureShell.cpp (+ Cryptography/HierarchicalStorage/Configuration/SessionData
+which include PuttyIntf.h). They include putty headers via the engine flags + need genprops
+(__property/__closure already handled) + putty include path. They supply the last 16 symbols
+and call backend_init/backend_send/select_result. Then wire SecureShell's event loop to
+winscp_net_select() -> real SSH/SFTP connect from the remote panel.
+
+## Phase 3 step 2 START: PuttyIntf.cpp (engine<->putty bridge) compiles
+The hardest C++ bridge file compiles (0 errors) under engine flags (-fshort-wchar -fms-
+extensions) + putty include path. Key reconciliations:
+- native/putty/include/windows/platform.h redirects PuTTY's <windows\platform.h> to the unix
+  platform.h (clang normalises the backslash; -I native/putty/include precedes source/putty).
+- platform.h gained REG_*/PUTTY_REG_*/_T/TEXT, CriticalSection decls, do_select(bool).
+- ssh\gss.h backslash stub + uxstubs GSS no-op (ssh_gss_setup->empty liblist) +
+  filename_from_utf8.
+- Guarded source edits (see UPSTREAM-PATCHES.md): defs.h HAVE_AES_NI x86-only, SecureShell.h
+  SOCKET, PuttyIntf.cpp HasGSSAPI under NO_GSSAPI.
+- wchar_t note: putty libs currently build WITHOUT -fshort-wchar (4-byte) while the engine
+  uses 2-byte; SFTP/SSH is char-based so the boundary is fine, but for full ABI safety the
+  putty libs should also be built with -fshort-wchar before runtime use.
+
+### Next: SecureShell.cpp (event loop -> winscp_net_select) + the PuttyIntf.h-including engine
+.cpp (Configuration/SessionData/Cryptography/HierarchicalStorage), then link + real connect.
+
+## Phase 3 step 2 progress: 6 SSH-side engine TUs compile+build (winscpcore_ssh group)
+The build was RED at HEAD (SecureShell.h SOCKET typedef left the header-parse guard broken);
+fixed (non-Windows `typedef int SOCKET` matching putty). New CMake `winscpcore_ssh` OBJECT lib
+compiles PuttyIntf.h-including TUs with the putty include set + WINSCP/NO_GSSAPI, folded into
+libwinscpcore. **Now compiling: PuttyIntf, Cryptography, Configuration, HierarchicalStorage,
+SecureShell.** ctest green.
+
+Landmark pieces this round (all no-source-edit except the SOCKET guard):
+- **Storage backend** `native/rtlcompat/src/IniFiles.cpp`: real file-backed TCustomIniFile/
+  TMemIniFile (case-insensitive, UTF-8, UpdateFile persist, GetStrings/SetStrings). TRegistry =
+  honest absent-registry stub (Configuration picks INI on non-Windows). + TStrings SaveToStream/
+  LoadFromStream/Equals/BeginUpdate/EndUpdate; escape_registry_key.c (portable putty util) into
+  puttyplatform.
+- **Winsock async-select emulation** `native/rtlcompat/{include/winapi/winsock2.h,src/WinSock.cpp}`:
+  real BSD-backed WSAEventSelect/WSAEnumNetworkEvents over select() (one-shot FD_CONNECT/FD_CLOSE),
+  FD_*/WSANETWORKEVENTS/SOCKADDR_IN/hostent/WSAIoctl/closesocket. Made SecureShell 44->11 errors.
+- **handle-wait stub** `native/putty/{include/platform.h,src/uxhandlewait.c}`: empty wait list on
+  unix (sockets via select) → SecureShell's EventSelectLoop waits only on its socket event.
+- **genprops closure extensions**: `f(obj.Method)` call-arg + `X.OnXxx = &obj.Method` bind
+  (TimeoutPrompt, CopyAlias.OnSubmit) — generalizes the __closure codegen beyond bare this-methods.
+- RTL adds: HIWORD/LOWORD/MAKEWORD/DWORD_PTR, ParamStr, TPath::IsDriveRooted, StrToFloat/
+  ForceDirectories/FileSetAttr/ExpandUNCFileName, free LastDelimiter, UnicodeString(char16_t,
+  count=1) implicit single-char ctor + (const char*,int), KEY_WRITE/REG_*/ERROR_* consts.
+
+⚠ RUNTIME UNVALIDATED: SecureShell's EventSelectLoop waits on FSocketEvent via WaitForMultiple-
+Objects, but our WSAEventSelect emulation can't auto-signal that event on socket activity (Windows
+ties them at the kernel). Compiles+links, but the loop won't wake on data until FSocketEvent is
+wired to winscp_net_select(). This is THE first runtime task once a test SSH server exists.
+
+### Remaining SSH .cpp (error counts w/ putty flags): ScpFileSystem 5 (sprintf 2-byte-wchar
+formatter + TSafeHandleStream(THandle) + multi-arg closure ProcessDirectory), SftpFileSystem 39,
+Terminal 49, SessionData 45 (Xml.XMLIntf surface: IXMLNode/IXMLDocument ChildNodes/Count/FindNode/
+Get/Text/NodeName/GetAttribute — session import/export), SessionInfo 71, CoreMain 1 (FileZillaIntf.h
+— FTP, deferred). Next best path to a connect: SftpFileSystem + Terminal + SessionData.
+
+## Remote directory navigation WORKS — nav-crash fixed (rtlcompat property binding)
+Double-clicking a remote dir (GUI) / `Terminal->ChangeDirectory()` (harness) segfaulted with a
+stack overflow inside `TRemoteDirectoryChangesCache::GetValue` (RemoteFiles.cpp:1928). Root cause:
+that engine class (`: private TStringList`) redeclares non-virtual `GetValue`/`SetValue` AND uses
+the inherited `Values[]` property internally. In Delphi a property binds *statically* to the
+accessor of its declaring class (TStrings), so `Values[]` -> TStrings.GetValue (no recursion). With
+clang `__declspec(property)` the bare accessor name `GetValue` instead resolves in the *derived*
+scope -> `TRemoteDirectoryChangesCache::GetValue` -> infinite recursion -> guard-page crash (lldb
+mis-shows `this=NULL`; it's actually a stack overflow at the function prologue).
+Fix (rtlcompat only, no source/ edit): bind `Names[]`/`Values[]` to non-shadowable forwarder
+accessors `DoGetName`/`DoGetValue`/`DoSetValue` in TStrings (Classes.hpp). Replicates Delphi's
+declaring-class binding; derived shadows can no longer capture the property. Verified: harness
+`ChangeDirectory("/config/testdir")` now lists 3 entries; ctest green. NEXT: remote upload/download.
+
+## Remote upload/download WORKS (F5) — engine transfer path + two wchar/ABI fixes
+TTerminal CopyToRemote/CopyToLocal now run end-to-end over the live SFTP session. Validated via
+the harness (upload /tmp file -> server, download server file -> /tmp, byte-correct) and wired into
+the Qt GUI: doCopy branches local->local (copyFile), local->remote (uploadToRemote), remote->local
+(downloadFromRemote); remote->remote is rejected for now. enginebridge gained uploadToRemote/
+downloadFromRemote (download attaches the TRemoteFile* from the live listing as each entry's Object,
+which TTerminal::ProcessFiles requires — a bare string list yields a NULL File and crashes).
+
+Two root-cause fixes (rtlcompat only, no source/ edits):
+1. **wchar single-char ctor**: `UnicodeString(L'/')` integral-PROMOTED the wchar_t arg to int and hit
+   the numeric ctor -> "47" instead of "/". So UnixExtractFileName's `LastDelimiter(L'/')` returned 0
+   and the download's local name became the full remote path ("/tmp//config/hello.txt"). Added an
+   exact-match `UnicodeString(wchar_t, count=1)` ctor (UnicodeString.h).
+2. **2-byte wcs* shims (WcsCompat.{h,cpp})**: the engine calls libc wcspbrk/wcschr/wcslen/wcscmp/...
+   which were built for 4-byte wchar_t; on our -fshort-wchar 2-byte strings they misread memory.
+   ValidLocalFileName's wcspbrk "matched" garbage and corrupted every download name ("hello.txt" ->
+   "hello.txt01"). Force-included WcsCompat.h (-include via winscpcore_flags) redirects the wcs* names
+   the engine uses to 2-byte-correct implementations in rtlcompat. **Audit class: any libc wide-string
+   function on engine strings is unsafe under -fshort-wchar — route new ones through WcsCompat.**
+ctest green. NEXT: remaining file ops (mkdir/delete/rename/properties) via TTerminal.
+
+## Remote file ops WORK — mkdir / rename / delete (engine + Qt GUI)
+TTerminal CreateDirectory / RenameFile / DeleteFile run over the live SFTP session. Harness-validated
+(create /config/optest_dir -> rename -> delete, server ends clean). enginebridge gains
+remoteMakeDir/remoteRename/remoteDelete (rename/delete look the entry up in the live listing via a
+shared FindInListing helper; CreateDirectory gets a default TRemoteProperties, which it asserts
+non-null). Local equivalents localMakeDir/localDelete/localRename (std::filesystem) added too, so the
+GUI actions work on either panel. Qt GUI: toolbar + shortcuts F7 (new folder), F2 (rename, single
+selection), Del (delete, with confirm); each dispatches remote-vs-local on the active panel.
+ctest green; winscp-qt builds + launches. NEXT: ChangeFileProperties (rights/timestamp) + a
+properties dialog; then -fshort-wchar on the putty libs (ABI safety) / SCP runtime.
+
+## Remote file properties (chmod) WORK — TTerminal ChangeFileProperties
+Changing unix permissions over the live SFTP session works (harness-validated: upload a
+winscp-owned file, ChangeFileProperties octal 600, server reflects 600). enginebridge gains
+remoteFileOctal (current octal from the live listing's TRemoteFile->Rights->Octal, for prefill)
+and remoteChmod (builds TRemoteProperties{Valid<<vpRights, Rights.Octal=...}). Qt GUI: F9
+Properties on the active remote panel -> octal input dialog prefilled with current perms.
+Debugging note: an early test "failed" only because the seed files were created via `docker exec`
+(root-owned) and the winscp SFTP user can't chmod root's files — the engine correctly sent
+SETSTAT(flags=0x4, perms=0600) and the server correctly returned permission-denied. Test against
+files the login user owns (e.g. uploaded ones). The wire path (AddProperties/AddCardinal, 4-byte)
+was correct throughout. NEXT: -fshort-wchar on the putty libs (ABI), then SCP runtime.
+
+## Investigated: -fshort-wchar on the putty libs — DEFERRED (clang poisons wcs*, off the SFTP path)
+Attempted to build puttycore/puttyplatform/puttycrypto_vs with -fshort-wchar (2-byte wchar_t) to
+match the engine. Blocked by design: under -fshort-wchar clang POISONS the libc wcs* identifiers
+(`#pragma`-style) as soon as <wchar.h> is included in C, precisely to prevent the 4-byte/2-byte ABI
+mix. PuTTY's wide-string utilities (utils/burnwcs.c, dupwcs.c, dup_{mb_to_wc,wc_to_mb}.c, the
+utf8<->wide converters, stripctrl.c, settings.c) `#include <wchar.h>` and call wcslen/wcscpy, so they
+fail to compile under -fshort-wchar; a macro-redirect doesn't survive because the later <wchar.h>
+poison pragma clobbers our macro. Compiling them 4-byte while the rest is 2-byte would make putty
+internally inconsistent. The only clean route is editing ~9 upstream putty files to use 2-byte-safe
+replacements — high churn on vendored code for ZERO functional payoff: those utils are terminal/
+charset/display helpers that are NOT on the SFTP path, which is char/UTF-8 based. Every SFTP feature
+(connect, auth, host-key, listing, nav, upload/download, mkdir/rename/delete, chmod) works correctly
+with the current 4-byte putty, i.e. no wide string is corrupted crossing PuttyIntf in practice.
+Decision: keep putty at 4-byte wchar_t. Revisit only if a concrete UTF-16-crossing putty path
+(e.g. GSSAPI principal names, certain key-file paths) is ever exercised. The wcs* class-bug on the
+ENGINE side is already handled by WcsCompat.h (-include via winscpcore_flags). Made WcsCompat.h
+include <stddef.h> instead of <wchar.h> in C mode (future-proof; avoids the poison if ever used in C).
+
+## SCP protocol RUNTIME WORKS — connect + list (and fixed a latent TStrings::Assign no-op)
+The SCP filesystem now connects, runs its shell-command startup (clear-aliases/detect-return-var/
+pwd) and lists a real directory over an exec/shell channel. Validated via the harness with
+FSProtocol=fsSCPonly (added a WINSCP_SCP=1 env toggle to native/harness/main.cpp): connects, lists
+/config (10 entries incl. hello.txt). Same Docker server (the winscp user has /bin/bash, so SCP's
+shell commands run).
+Root-cause fixed (rtlcompat, no source/ edit): **TStrings::Assign was a no-op stub** in the base
+TPersistent — TSCPFileSystem::ReadDirectory does `OutputCopy->Assign(FOutput)` then reads
+`OutputCopy->Strings[0]`, which on the empty copy went out of bounds and crashed in
+basic_string::__is_long. Implemented TStrings::Assign (clear + copy strings & objects via the
+virtual interface). This was a LATENT bug affecting ~13 Assign call sites across the engine, not
+just SCP. NEXT: wire SCP into enginebridge/GUI as a protocol choice (engine side proven); then
+Phase 4 (FTP/S3/WebDAV) and Phase 7 (Qt dialogs).
+
+## GUI: protocol choice (SFTP / SCP) in the Connect dialog
+The Connect dialog gained a Protocol dropdown (SFTP default, SCP). enginebridge::connectSftp now
+takes an engine::Protocol and sets FSProtocol = fsSFTPonly / fsSCPonly accordingly. Both engine
+paths are runtime-proven (harness); the GUI now lets the user pick. winscp-qt builds + launches.
+
+## SCP upload + download WORK — two more porting-class fixes (field-property lvalue, swscanf)
+SCP file transfer now round-trips correctly (harness WINSCP_SCP=1 WINSCP_XFER=1: upload /tmp file ->
+server with mode 0644, download back byte-identical). SFTP transfers unaffected (regression-checked).
+Two root causes, both rtlcompat/genprops (no source/ edit):
+1. **genprops field-backed property lvalue.** A `__property T P = { read=FFld, write=FFld }` was
+   codegen'd with a by-VALUE getter (`__pg_P() const { return (T)FFld; }`). So `obj->P.member = x`
+   mutated a throwaway copy — e.g. TCopyParamType::Default's `Rights.Number = rfDefault` was silently
+   lost, and SCP sent file mode **0000** (upload created unreadable files; download then failed
+   "Permission denied"). In Borland, `read=Field` is a direct lvalue. Fix: for pure field-backed
+   props (read==write==same field, non-indexed) genprops now emits a non-const reference getter
+   (`T & __pg_P() { return FFld; }`) plus a const by-value getter, so `obj->P.member = x` mutates the
+   field. This is a CLASS fix — any `fieldProperty.member = x` across the engine was silently a no-op
+   before. Full engine recompiled clean; ctest green; SFTP regression clean.
+2. **swscanf under -fshort-wchar.** SCP's T (timestamp) control-record parse used libc `swscanf`,
+   which reads 4-byte wchar_t and failed on our 2-byte strings -> "SCP protocol error: Illegal time
+   format". Added a numeric-only `winscp_swscanf` to WcsCompat (ASCII wide->narrow, vsscanf); it's
+   the only swscanf in the engine. (swprintf: none.)
+Harness gained an optional transfer self-test (WINSCP_XFER=1) and now prints query MoreMessages.
+NEXT: Phase 4 (FTP/S3/WebDAV) or Phase 7 (Qt dialogs).
+
+## Phase 4 (WebDAV/S3) SCOPED — compile is close; link needs neon/libs3 built natively
+Surveyed the deferred protocol TUs against the real geninclude shadow set (genprops each into
+/tmp/gi4, compile with -I native/build/geninclude/core + neon/expat/libs3/openssl includes,
+-DWINSCP -DNO_GSSAPI). Real COMPILE error counts (NOT link): NeonIntf 1, Http 1, S3FileSystem 2,
+WebDAVFileSystem 13 — all small RTL gaps, same flavor as the SFTP grind. Inventory:
+- **neon header**: `libs/neon/src/ne_defs.h:44` uses `off64_t` (Linux-ism) — macOS has only off_t.
+  Add `#ifdef __APPLE__ typedef off_t off64_t;` via a guarded fix or a -Doff64_t=off_t. (UPSTREAM
+  candidate; affects every neon-including TU.)
+- **rtlcompat adds**: `UTF8String::vprintf` (NeonIntf:415); Win CRT `_close`, `O_BINARY`,
+  `FILE_BEGIN` (WebDAV file I/O); a `FormatDateTime` overload (WebDAV:1483).
+- **codegen/closure**: WebDAV:1253 `winscp::MakeClosure` not resolved in one context (genprops
+  call-arg closure case — like the ProcessFiles/RunAction ones); WebDAV:310 & Http:82 "reference to
+  non-static member function must be called" (a `&obj.Method` / event-bind genprops needs to handle).
+- **string-literal width**: WebDAV:1113 `char32_t[2]` and :1882 `wchar_t[2]` vs UTF8String — a U""/
+  L"" literal concatenated with the wrong string type (fix the operator+ or the literal).
+- **S3 only**: `System.JSON.hpp` not found (S3 uses Delphi System.JSON) — needs a small JSON
+  shim/DOM like XmlDoc.cpp, or compile S3 last.
+
+THE BIG CHUNK is LINK, not compile: neon (autotools, needs OpenSSL+expat+zlib) and libs3
+(GNUmakefile, needs libcurl+libxml2) must build as native static libs first, then the 4 TUs join a
+new CMake group (mirror winscpcore_ssh) and Terminal.cpp's `Open()` WebDAV/S3 branches (currently
+`#ifdef _WIN32`-guarded to throw "not supported") get un-guarded. Suggested order: (1) build expat
+(already proven) + neon static; (2) fix the ~15 WebDAV/Http/NeonIntf compile gaps above; (3) link +
+runtime-debug WebDAV against a test server (e.g. a dockerized `bytemark/webdav` or rclone serve);
+(4) then S3 (build libs3 + JSON shim) against MinIO. FTP (FileZilla) remains the hardest, last.
+
+### Phase 4 neon build — SCOUTED (configure works; 15/26 .c compile; 11 need fork-porting)
+Out-of-tree autotools configure works and detects everything we need:
+```sh
+mkdir /tmp/neon-build && cd /tmp/neon-build
+sh <repo>/libs/neon/configure --with-ssl=openssl --without-zlib --disable-shared \
+   --enable-static --with-expat CFLAGS="-I$(brew --prefix openssl)/include -I<repo>/libs/expat/lib" \
+   LDFLAGS="-L$(brew --prefix openssl)/lib"
+# config.status dies on a missing test/Makefile.in (test dir not vendored) AFTER making
+# src/Makefile but BEFORE config.h — generate config.h directly:
+sh ./config.status config.h   # -> HAVE_EXPAT, NE_HAVE_SSL, HAVE_OPENSSL_SSL_H, NEON 0.34.2
+```
+Compiling the 26 src/*.c with that config.h: **15 compile clean, 11 fail** — all because this is
+the WinSCP-PATCHED neon (Windows assumptions). The 11 + cause:
+- printf length macros expand to nothing → `%" NE_FMT_TIME_T`, etc (ne_auth/basic/request/session/
+  utils). **ROOT CAUSE FOUND**: the neon .c do `#include "config.h"`, which quote-include resolves
+  to the SIBLING `libs/neon/src/config.h` (NOT our generated /tmp/neon-build/config.h — a sibling
+  always wins over -I). That sibling is a WinSCP hand-written config that gates everything under
+  `#if defined(_WIN32)` (`NE_FMT_TIME_T`, `#include <io.h>`, ...), so on macOS the macros are empty
+  and Windows headers leak. THE FIX for the whole neon build: add a `#ifndef _WIN32` branch to
+  `libs/neon/src/config.h` (guarded source edit -> UPSTREAM-PATCHES) that pulls the autotools-
+  generated values (NE_FMT_*, HAVE_EXPAT, NE_HAVE_SSL, sized-int types, errno/headers), OR have the
+  CMake compile neon-source COPIES with our config.h as their sibling (genprops-style shadow). This
+  single fix unblocks most of the 11 (and the `errno`, `ne_md5` 32-bit-type, `ne_xml` parser, and
+  `ne_openssl`/<windows.h> ones are all the same _WIN32-gated-config symptom). ne_207's
+  NE_207_LIBERAL_ESCAPING is a separate WinSCP-added flag.
+- `ne_openssl.c` `#include <windows.h>` (WinSCP added Windows crypto-store code) — needs an
+  `#ifndef _WIN32` guard / unix branch.
+- `ne_xml.c` "need an XML parser" — HAVE_EXPAT set in config.h but ne_xml selects via a different
+  macro (NE_HAVE_EXPAT / EXPAT vs LIBXML2). Set the macro it actually checks.
+- `ne_md5.c` "Cannot determine unsigned 32-bit data type" — define the size macro it wants.
+- `errno` undeclared in ne_locks/ne_socket — add `#include <errno.h>` (config gap).
+- `NE_207_LIBERAL_ESCAPING` undeclared (ne_207) — a WinSCP-added flag; provide it.
+Plan: capture a working `config.h` into `native/neon/` + a small `ne_defs_compat.h`/extra-defines
+header, guard the 2-3 WinSCP Windows-isms (#ifndef _WIN32, listed in UPSTREAM-PATCHES), then a
+`native/neon/CMakeLists.txt` (mirror expat) compiles libneon.a. Then the 4 engine TUs (their ~15
+compile gaps are inventoried above) + link + un-guard Terminal.cpp. This is multi-session.
+
+### Phase 4 neon — libneon.a NOW BUILDS (all 26 .c compile on clang/arm64)
+Resolved the _WIN32-gated-config root cause: `native/neon/neon_config_unix.h` (captured autotools
+config) is pulled by a guarded `#else` in `libs/neon/src/config.h`; built with `-DWINSCP
+-DHAVE_CONFIG_H`; the 3 WinSCP-Windows branches (`ne_openssl` <windows.h>, `ne_socket`
+ioctlsocket/FIONBIO ×3) are now `_WIN32`-guarded (UPSTREAM-PATCHES.md). `native/neon/CMakeLists.txt`
+(in the build via add_subdirectory) produces `build/neon/libneon.a` (591 KB); full build + ctest
+green. NEXT Phase 4 steps: (1) expat as a CMake target (neon's XML dep, needed at link);
+(2) fix the ~15 WebDAV/Http/NeonIntf compile gaps (inventory above) + add a winscpcore_neon CMake
+group; (3) link (libneon + expat + OpenSSL) and un-guard Terminal.cpp Open() WebDAV branch;
+(4) runtime-debug against a WebDAV test server. Then S3 (libs3 + System.JSON shim) and FTP last.
+
+### Phase 4 progress — NeonIntf + Http compile AND link into the engine
+2 of the 4 WebDAV/S3 TUs are now in the build (winscpcore_neon OBJECT group, folded into
+libwinscpcore): **NeonIntf.cpp, Http.cpp**. Both compile and the harness/qt exes link them with
+libneon + libexpat. Fixes this round:
+- rtlcompat: `AnsiStringBase::vprintf(const char*, va_list)` (NeonIntf's neon debug forwarder).
+- genprops: slot rules for `InitNeonTls`/`SetNeonTlsInit` (TNeonTlsInit closure in arg slot 1).
+- link: neon was pulling GSSAPI -> set `/* #undef HAVE_GSSAPI */` in native/neon/neon_config_unix.h
+  (matches the engine's NO_GSSAPI). Added `neon expat` to the harness + qt link lists (on-demand).
+  NeonIntf.cpp now provides CertificateSummary/CertificateVerificationMessage/NeonWindowsValidate-
+  CertificateWithMessage, so those interface_stub.cpp stubs were removed (were duplicates); added a
+  `WindowsValidateCertificate` stub (Security.cpp not compiled). Full build + ctest green; SFTP
+  regression clean.
+Remaining for the WebDAV/S3 group (re-enable in CORE_NEON_NAMES): **WebDAVFileSystem.cpp** ~6 gaps —
+UTF-32 literal `U"\U0001F512"` + UnicodeString (needs a char32_t ctor/operator+), genprops wrongly
+wrapping the `CalculateFilesChecksum` DEFINITION (slot rule matched a method def, not a call — needs
+a def-guard), neon `off64_t` in ne_defs.h (NE_LFS path; define off64_t or force the off_t branch),
+`_close`/`O_BINARY`/`FILE_BEGIN` (rtlcompat winapi stubs), a `FormatDateTime(fmt, dt, FormatSettings)`
+overload, and a const-qualifier assign (Uri.path). **S3FileSystem.cpp** also needs a System.JSON shim.
+Then link (libs3 for S3) + un-guard Terminal.cpp Open() + runtime-debug vs a WebDAV server.
+
+### Phase 4 — WebDAVFileSystem.cpp compiles + links (3/4 WebDAV/S3 TUs in the build)
+WebDAVFileSystem.cpp now joins NeonIntf+Http in winscpcore_neon (compiles AND links into harness/qt
+with libneon+libexpat). Fixes this round:
+- rtlcompat: `_open_osfhandle`/`_close`/`SetFilePointer` + `O_BINARY`/`FILE_BEGIN`/`FILE_CURRENT`/
+  `FILE_END` (WebDAV upload/download fd path, over our fd-packed-HANDLE); `AnsiStringBase::c_str()
+  const` now returns `char*` (Embarcadero fidelity — `ne_uri.path = Path.c_str()`); free
+  `operator+(const wchar_t*/char*, AnsiStringBase)`; `UnicodeString(const char32_t*)` ctor (UTF-32
+  literal `U"\U0001F512"` -> UTF-16 surrogates); a 3-arg `FormatDateTime(fmt, dt, TFormatSettings)`
+  overload (NOTE: still ISO-format, not the Delphi picture — HTTP-date header wrong until a real
+  picture formatter; TODO).
+- genprops: slot-rule guard skipping `T…Event` type tokens (an unnamed event-type PARAM in a method
+  definition, e.g. WebDAV's CalculateFilesChecksum override, was being wrapped as a closure).
+- neon: `libs/neon/src/ne_defs.h` off64_t typedef for non-Windows under NE_LFS (UPSTREAM-PATCHES).
+Full build + ctest green; SFTP/SCP regression clean. REMAINING: S3FileSystem.cpp (needs a
+System.JSON shim + libs3 built) — then un-guard Terminal.cpp Open() WebDAV branch + runtime-debug
+against a WebDAV server (FormatDateTime picture + the upload fd path are the likely first runtime
+issues).
+
+## WebDAV WORKS END-TO-END — third protocol live (neon, native)
+The ported engine connects to a real WebDAV server over neon (native libneon+libexpat), authenticates
+(HTTP Basic), and lists a directory. Validated via the harness: `WINSCP_DAV=1
+./native/build/harness/winscp-harness 127.0.0.1 8086 winscp winscp123` -> CONNECTED, lists `/`
+(hello-dav.txt). Two final wiring fixes: harness/bridge must call `NeonInitialize()` (ne_sock_init;
+normally done by CoreInitialize) — added after PuttyInitialize; and Terminal.cpp's WebDAV Open()
+branch un-guarded (UPSTREAM-PATCHES). SFTP+SCP regression clean; full build + ctest green.
+Test server: `docker run -d --name winscp-test-dav -p 8086:80 -e AUTH_TYPE=Basic -e USERNAME=winscp
+-e PASSWORD=winscp123 bytemark/webdav` (PUT/GET/PROPFIND verified with curl).
+NEXT: wire WebDAV into enginebridge/GUI (protocol dropdown already exists — add WebDAV + host/path);
+real FormatDateTime picture formatter (HTTP-date header is currently ISO — affects upload timestamps);
+WebDAV upload/download + file ops runtime shake-out; HTTPS (ftpsImplicit/TLS) cert path. Then S3
+(libs3 + System.JSON) and FTP (FileZilla) last.
+
+### WebDAV upload + download WORK (validated)
+WebDAV file transfer round-trips over neon (harness WINSCP_DAV=1 WINSCP_XFER=1: upload /tmp file ->
+server, download back byte-identical). The native fd path (_open_osfhandle/_close/SetFilePointer over
+fd-packed-HANDLE) works at runtime. Fixed the harness self-test to target Terminal->CurrentDirectory
+(protocol-agnostic) instead of a hardcoded /config (WebDAV root is /). SFTP+SCP xfer regression clean.
+
+### WebDAV file ops WORK — SFTP/SCP/WebDAV now at feature parity
+WebDAV mkdir/rename/delete (MKCOL/MOVE/DELETE) validated via harness WINSCP_OPS=1. All three
+protocols now pass the same self-tests: connect, list, upload, download, mkdir, rename, delete.
+(Harness WINSCP_OPS uses Terminal->CurrentDirectory too, so it's protocol-agnostic.) ctest green.
+
+### Phase 4 — S3FileSystem.cpp COMPILES (System.JSON shim + RTL/XML adds); link pending libs3
+S3FileSystem.cpp now compiles clean in the winscpcore_neon group (verified by building the object;
+excluded from the engine LINK until libs3 is built, since it pulls S3_* symbols). Added:
+- **System.JSON shim**: native/rtlcompat/include/System.JSON.hpp + src/JsonDoc.cpp — a compact
+  recursive-descent JSON parser + the tiny Delphi DOM S3 uses (TJSONObject::ParseJSONValue,
+  Values[name], Value(), GetEnumerator/MoveNext/Current, TJSONPair JsonString/JsonValue). Only the
+  AWS instance-metadata credential path; arrays/numbers kept as text.
+- rtlcompat: AnsiStringBase::data() + static AnsiString::Format (byte Format via the wide Format);
+  SysExtra FileAge (stat mtime->TDateTime) + ISO8601ToDate (sscanf YYYY-MM-DDThh:mm:ss).
+- XML DOM (XMLIntf.hpp/XmlDoc.cpp): IXMLNodeList::FindNode(Name, Namespace) 2-arg; IXMLDocument
+  LoadFromXML(str) + ParseOptions (TParseOptions/poPreserveWhiteSpace, stored/ignored);
+  XmlDocImpl::LoadString (parse from buffer, refactored out of Load).
+REMAINING for S3 runtime: build libs3 natively (17 src/*.c; needs libcurl + libxml2 — brew has both;
+its own config like neon), add it to the neon link, re-enable S3FileSystem.cpp in CORE_NEON_NAMES,
+un-guard Terminal.cpp Open() S3 branch, then runtime-debug vs MinIO (docker). FTP (FileZilla) last.
+
+### Phase 4 libs3 — SCOUTED (compiles as C++ with neon+expat; 10/13, 3 need small edits)
+Key finding: the WinSCP libs3 fork uses **neon (HTTP) + expat (XML)**, NOT curl/libxml2 (simplexml.c
+includes <expat.h>; request.h uses ne_session/ne_request/NeonCode), and is compiled as **C++**
+(request.c uses `new[]`; libs3.h uses bare struct-tag-as-type `ne_session_s *`). So build with
+`clang++ -x c++ -std=gnu++17 -DWINSCP -Ilibs/libs3/inc -Ilibs/neon/src -Inative/neon
+-Ilibs/expat/lib -I$(brew --prefix openssl)/include`. Exclude `s3.c` (CLI tool), `testsimplexml.c`,
+`mingw_*`. Result: 10/13 compile; the 3 remaining need:
+- response_headers_handler.c: `strnicmp` -> add `-Dstrnicmp=strncasecmp`.
+- request_context.c: `memset` undeclared -> add `-include cstring` (C++ build needs it).
+- request.c: (a) `SYSTEMTIME`/`GetSystemTime` (a WINSCP "inspired by PuTTY ltime" block ~line 1567)
+  — guard `#ifdef _WIN32` and use `gmtime_r` on unix, OR provide SYSTEMTIME+GetSystemTime; (b)
+  `ne_set_request_body_provider(..., neon_read_func, ...)` — `neon_read_func` returns `int` but
+  `ne_provide_body` is `ssize_t(*)(...)`; C++ rejects the return-type mismatch. Change neon_read_func
+  to return `ssize_t` (correct everywhere) or cast `(ne_provide_body)`. (Guarded source edits ->
+  UPSTREAM-PATCHES.)
+THEN: native/libs3/CMakeLists.txt (static libs3, links neon+expat+OpenSSL) like native/neon; add it
+to the engine link; re-enable S3FileSystem.cpp in CORE_NEON_NAMES; un-guard Terminal.cpp Open() S3
+branch; runtime-debug vs MinIO (`docker run -p 9000:9000 minio/minio server /data`). FTP (FileZilla)
+remains last + hardest.
+
+## S3 builds + links + CONNECTS — at the AWS SigV4 frontier (libs3 native)
+libs3 builds natively (native/libs3/CMakeLists.txt -> liblibs3.a, 404 KB; neon+expat-based, compiled
+as C++; 3 guarded request.c edits — UPSTREAM-PATCHES). S3FileSystem.cpp re-enabled in
+winscpcore_neon and LINKS into harness/qt (libs3+neon+expat); Terminal.cpp S3 Open() un-guarded;
+removed the now-duplicate S3 env stubs from interface_stub. Full build + ctest green; SFTP/SCP/WebDAV
+regression clean.
+RUNTIME FRONTIER: `WINSCP_S3=1 ./native/build/harness/winscp-harness 127.0.0.1 9100 minioadmin
+minioadmin123` (MinIO: `docker run -p 9100:9000 -e MINIO_ROOT_USER=minioadmin -e
+MINIO_ROOT_PASSWORD=minioadmin123 minio/minio server /data`, bucket seeded via mc) reaches the
+server and attempts a signed request, then fails: **"Access denied — There were headers present in
+the request which were not signed"** (AWS Signature V4). Next: debug the SigV4 header signing — a
+header is in the HTTP request but absent from SignedHeaders. Suspects: a neon-added default header
+(e.g. our ne adds something WinSCP's didn't), the request-date path, or path-style/region wiring.
+This is the S3 equivalent of the SFTP "userauth frontier" — characterized; needs a focused runtime
+session (use the MinIO server log + a temp trace of the headers libs3 signs vs sends).
+The S3 session uses s3usPath + region us-east-1 + ftpsNone (harness WINSCP_S3).
+
+## S3 WORKS — FOURTH protocol live (libs3 native); SigV4 frontier was a one-liner
+S3 connects to MinIO, authenticates (AWS SigV4), and lists buckets: `WINSCP_S3=1
+./native/build/harness/winscp-harness 127.0.0.1 9100 minioadmin minioadmin123` -> CONNECTED, lists
+`/` (testbucket). The "headers present which were not signed" frontier was `AnsiStringBase::data()`
+returning a non-null "" for an empty string: S3FileSystem passes `SecurityToken.data()` and libs3
+adds x-amz-security-token only when non-NULL — Embarcadero's data() returns NULL for empty, ours
+didn't, so an empty signed security-token header was sent and MinIO rejected it. Fixed data() to
+return NULL when empty (Embarcadero fidelity). GUI: Protocol dropdown gains S3 (s3usPath + region
+us-east-1 + ftpsNone). All four protocols (SFTP/SCP/WebDAV/S3) connect+list; ctest green; full build
++ GUI launch OK. NEXT for S3: bucket/object nav + upload/download/ops runtime; then FTP (FileZilla).
+Test server: `docker run -p 9100:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin123 minio/minio server /data`.
+
+## Phase 7 START — WinSCP-faithful GUI skeleton (Login dialog + Commander)
+The Qt GUI now mirrors WinSCP's Commander interface so the working protocols can be exercised by
+eye/hand: an iconic **Login dialog** on startup (sites tree + "Session" group: File protocol combo
+[SFTP/SCP/FTP/WebDAV/Amazon S3], Host name + Port number, User name, Password, Tools/Manage +
+Login/Close); the **dual-pane Commander** with per-panel title bars (Local / user@host — PROTOCOL),
+address bars (path + Up/Refresh), the **Name | Size | Changed | Rights | Owner** columns (Name
+stretches, others fixed; Rights/Owner populated for remote via DirEntry.rights/owner from
+TRemoteFile RightsStr/Owner.DisplayText), per-panel status ("N directories, M files" / "K selected"),
+and the classic bottom **function-key bar** (F2 Rename / F5 Copy / F6 Move / F7 Create Directory /
+F8 Delete / F9 Properties / F10 Quit). Plus a Disconnect action, a toggleable Session log dock
+(Ctrl+L; shows connect steps/errors), and protocol-aware default ports (SFTP/SCP 2222, WebDAV 8086,
+S3 9100 — the local test servers). Engine wiring unchanged (connect/copy/mkdir/rename/delete/chmod
+through enginebridge). winscp-qt builds + launches; verified by an offscreen render (WINSCP_SHOT=path).
+NEXT GUI: real transfer progress + queue pane, context menus, drive/bookmark bar, faithful Properties
+dialog (rights checkboxes), wire the menu bar actions; FTP backend later.
+
+## Phase 7 cont. — Properties dialog, context menus, menu bar, transfer feedback
+GUI faithfulness round 2: a WinSCP-style **Properties dialog** (Owner/Group/Others x R/W/X checkbox
+grid synced to an octal field) replaces the bare octal prompt; **right-click context menus** on each
+panel (Upload/Download, Rename, Delete, Create Directory, Properties); the **menu bar** is wired
+(Local/Files/Session/Options/Remote/Help -> the same ops); transfers show a wait cursor + status.
+Verified by offscreen renders (Login dialog + Commander both read as WinSCP). All four protocols are
+now testable end-to-end through the GUI. NEXT GUI: real per-file transfer progress/queue pane,
+drive/bookmark bar, synchronized-browsing, faithful site manager (save sessions).
+
+## Phase 7 GUI — usable WinSCP-faithful file manager (testable end-to-end)
+The Qt GUI is now a working WinSCP Commander, all four protocols exercisable by hand:
+- Login dialog + **Site Manager** (save/load/delete sessions, QSettings).
+- Dual panes, each with a WinSCP nav toolbar (**Back/Forward/Up/Home/Refresh** + path) + history,
+  Name/Size/Changed/Rights/Owner columns (Rights/Owner real for remote), per-panel status.
+- Function-key bar fully wired: **F2 Rename, F5 Copy, F6 Move, F7 Create Directory, F8 Delete,
+  F9 Properties, F10 Quit** (+ shortcuts, + right-click context menu, + menu bar).
+- WinSCP-style **Properties** dialog (rwx grid) and **transfer progress** dialog (engine OnProgress).
+- Session log dock (Ctrl+L), Disconnect, About.
+Verified by offscreen renders incl. a live SFTP connection showing real /config listings with
+rights/owner. Dev affordances: WINSCP_SHOT (render) + WINSCP_AUTOCONNECT (connect-then-render).
+NEXT GUI toward full fidelity: background transfer **queue pane**, synchronized browsing, F3 View /
+F4 Edit, toolbar icons, the remaining WinSCP dialogs (preferences, copy-options, etc).
+
+## FormatDateTime now interprets the Delphi picture (was an ISO stub)
+Implemented a real Delphi-picture FormatDateTime in rtlcompat (yyyy/yy, m/mm/mmm/mmmm,
+d/dd/ddd/dddd, h/hh, n/nn, s/ss, 'literal', am/pm; English names). Previously it ignored the
+format and always returned ISO — wrong for WebDAV's HTTP-date header
+("ddd, d mmm yyyy hh:nn:ss 'GMT'" -> "Sun, 21 Jun 2026 07:29:07 GMT" now) and for any
+date routed through FormatDateTime (logs/display). Fixes the documented WebDAV upload-timestamp
+TODO. Full build + ctest green; all protocols regression-clean.
+
+## S3 upload/download WORK — SubString off-by-one fixed (bucket name truncation)
+S3 file transfer now round-trips (harness: cd /testbucket, upload -> bucket has the object,
+download -> byte-identical). Root cause: UnicodeString::SubString clamped a start<1 by SHRINKING
+count (std::string style), but Delphi Copy/SubString clamps start to 1 and KEEPS count.
+S3FileSystem::ParsePath does `BucketName = Path.SubString(0, P-1)`, so "testbucket" became
+"testbucke" -> MinIO "specified bucket does not exist". Fixed SubString to Delphi semantics
+(start<1 -> 1, count unchanged). CLASS fix (any SubString(0/negative, n) across the engine).
+All four protocols now do connect/list/transfer; ctest green; regression clean.
+
+## S3 ops checked; Tab-switch added
+S3 file ops: mkdir (create bucket) and delete (remove bucket) WORK at root; rename returns
+"Operation not supported" — correct S3 behavior (no bucket-rename API), not a bug. Object-level
+inside buckets uses copy+delete. So S3 is functionally complete for connect/list/transfer + the
+ops S3 actually supports. GUI: Tab now switches the active panel (Norton/WinSCP classic).
+
+## WebDAV HTTPS/TLS WORKS — fifth transport verified
+WebDAV over TLS connects via neon's OpenSSL path: harness `WINSCP_DAVS=1` (Ftps=ftpsImplicit)
+against an rclone https WebDAV server (self-signed) -> cert-verification prompt fires
+(OnQueryUser, auto-accepted) -> CONNECTED -> lists files. enginebridge::connectSftp gained a `tls`
+flag (Ftps=ftpsImplicit for WebDAV/S3); the GUI Login dialog gained an Encryption combo
+(No encryption / TLS-SSL) shown for WebDAV/S3. Plain WebDAV/S3 regression clean.
+HTTPS test server: `docker run -p 8443:8443 -v data -v cert -v key rclone/rclone serve webdav
+/data --addr :8443 --cert /cert.pem --key /key.pem --user winscp --pass winscp123`.
+
+## Phase 7 GUI round 3 — queue dock, sorting, TLS, prefs, polish (all 4 protocols GUI-verified)
+GUI is now a well-rounded WinSCP file manager, every protocol exercised through the actual GUI
+process (SFTP/WebDAV download + S3 connect rendered live via WINSCP_AUTOCONNECT/AUTOXFER):
+- **Transfer queue** dock (Copy + Move feed it; live queued->active->NN%->done/failed; Ctrl+Q).
+- **Column sorting** (click header, arrow indicator, dirs-first within key).
+- **WebDAV/S3 over TLS** (Login Encryption combo; ftpsImplicit).
+- **Tab** switches panels; **synchronized browsing**; navigation history (Back/Forward).
+- **Show hidden files** toggle + **Preferences** dialog (persisted in QSettings); window geometry +
+  splitter persisted.
+- Native toolbar icons; directory operations (recursive); F3/F4 open/edit.
+Build reproducible from scratch; ctest green; Windows tree untouched. FTP backend is the remaining
+protocol (deferred to last). Other future work: true background (threaded) queue, Linux build,
+remaining WinSCP dialogs.
+
+## Linux-readiness audit (toward the macOS→Linux goal)
+Audited native/ + the putty unix backend for macOS-only APIs. Findings: the platform code is
+already POSIX/__APPLE__/__linux__-clean — getticktime/noise use clock_gettime (portable), ParamStr
+is __APPLE__(_NSGetExecutablePath)/__linux__(/proc/self/exe)-guarded, paths via getenv. One real
+Linux blocker fixed: the harness + winscp-qt whole-archive link used macOS-ld64 `-Wl,-force_load`,
+which GNU ld/lld don't understand — now `if(APPLE) -force_load else --whole-archive/--no-whole-archive`
+(macOS link byte-unchanged + verified; the Linux path is in place but UNTESTED — no Linux box here).
+Remaining for an actual Linux build: build the vendored libs (neon/expat/libs3 already CMake; putty
+already portable) on Linux, install Qt6/OpenSSL, and shake out any link-order issues GNU ld is
+pickier about than ld64. MACOSX_BUNDLE degrades to a normal executable on Linux (harmless).
+
+## Background transfer queue (threaded) — multi-file transfers no longer freeze the UI
+F5 Copy / F6 Move now run the batch on a worker std::thread; the queue dock updates live (progress
+marshaled to the UI thread via QMetaObject::invokeMethod) and the UI stays responsive (local
+browsing works during a transfer). Engine safety: it's single-connection/non-thread-safe, so (a)
+every bridge entry point now takes a recursive engine mutex (g_engineMutex), and (b) remote UI
+actions (connect/disconnect/remote-nav/remote-ops) are gated by gTransferRunning for the batch's
+duration. Verified in the GUI process: a 3-file background download (hello/owned/xfer-up ->
+/tmp/dlq) completes "done" with "Transferred 3/3", no crash, files byte-present. ctest green;
+harness (single-threaded) unaffected by the mutex. Note: still ONE connection -> transfers are
+serial and remote browsing is blocked mid-batch (WinSCP uses a 2nd connection for true parallelism;
+that's a future enhancement).
+
+## FTP (FileZilla) — phase started: engine side compiles, lib is the mountain
+- `FtpFileSystem.cpp` compiles clean (RTL gaps filled). Cannot link — needs the FileZilla lib.
+- FileZilla lib scoped in docs/porting/FTP-SCOPE.md. Key finding: `stdafx.h` (524 lines) pulls
+  `<afx.h>` (MFC → windows.h) AND `FileZillaApi.h` → `AsyncSslSocketLayer.h`, so the header chain is
+  tightly coupled — even the "simple" TUs (ServerPath/structures) transitively need the afx shim +
+  OLE + socket headers to parse. So the first compilable TU requires building most of the shim layer
+  at once (CString/CTime/CFile/collections/CCriticalSection + a POSIX CAsyncSocketEx replacing the
+  WSAAsyncSelect/hidden-helper-window message pump). This is a dedicated multi-session effort; doing
+  it piecemeal yields no runnable increment until the whole chain parses. Groundwork + map committed.
+
+## FTP: libwinscpfilezilla.a BUILDS (entire FileZilla backend compiles natively)
+All 16 source/filezilla TUs + the compat runtime (afx_format/afx_statics/winmsg) compile and archive
+into libwinscpfilezilla via native/filezilla/CMakeLists.txt (links rtlcompat for -fshort-wchar; compat
+shims first on the include path; genprops engine headers). afx_statics.cpp defines the CStringA
+empty-string statics (_afxDataNilA/_afxPchNilA). Remaining for working FTP: build the engine FTP TUs
+(FtpFileSystem.cpp + CoreMain.cpp) into winscpcore, link the lib into harness + winscp-qt, wire
+Protocol::Ftp in enginebridge + un-guard the FTP branch of TTerminal::Open(), then runtime-test vs a
+Docker FTP server (and tune the select-loop edge-trigger semantics in winmsg.cpp).
+
+## FTP WORKS: connect + login + directory listing + upload (native FileZilla)
+Native FTP via the ported FileZilla backend now connects, authenticates (server: OK LOGIN), lists
+the remote directory (3 entries with sizes), and uploads a file (verified on the server). The async
+socket emulation is functional: control + PASV data channels connect, the message pump delivers
+events, and the select-loop fires FD_READ (level, drives the FTP state machine) + FD_CLOSE on a real
+peer EOF (peeked with MSG_PEEK|MSG_DONTWAIT to detect end-of-listing without blocking the select
+thread or racing FileZilla's reader). Remaining FTP polish: download + remote ops (mkdir/rename/
+delete) stall after upload — a follow-on data-channel nuance to chase. SFTP/SCP/WebDAV/S3 unaffected.
+
+## FTP COMPLETE — all 5 protocols fully functional (connect/list/transfer/ops)
+Native FTP (ported FileZilla) now does the full set: connect, login, list, upload, download, mkdir,
+rename, AND delete (incl. directory delete). Last two fixes: (1) PreserveDownloadFileTime guarded on
+non-WIN32 (FileZilla's CFile FILE* handle is incompatible with the platform SetFileTime; the
+mismatch faulted the worker and hung downloads); (2) FTP DeleteFile falls back to TRemoteFile->
+FileName when a directory's FullFileName carries a trailing slash (UnixExtractFileName then returned
+"", and FileZilla's RemoveDir rejected the empty name -> INVALIDPARAM).
+
+Full matrix (harness, vs local Docker servers): SFTP/SCP/WebDAV(+TLS)/S3/FTP all connect+list+
+transfer; SFTP/WebDAV/FTP also do mkdir/rename/delete; S3 bucket-level ops. Build from scratch +
+ctest green; Windows tree untouched (FTP source edits #ifdef-guarded, in UPSTREAM-PATCHES).
+
+## Transfer queue: rich + parallel (the "cola + paralelas" milestone)
+The queue dock is now a real WinSCP-style queue: Operation/File/Size/Progress/Speed/Time-left/Status,
+a Cancel button (aborts via the engine progress sink -> SetCancel(csCancel)) and Clear-finished.
+Engine progress sink reports TransferProgress {file, transferred, total, cps} and returns bool to
+cancel. Parallel transfers: a >1-file plain remote copy fans out over 2 concurrent connections
+(enginebridge parallel pool: per-ParConn TTerminal + own mutex, so no global-lock serialization).
+Verified byte-perfect (MD5) for SFTP over 2 connections, repeatable. FTP gated to serial
+(parallelSupported()==false — its single-connection backend can't run concurrent instances).
+
+## GUI polish + real-world hardening (drag&drop, editor, auth, and two critical crash/stall fixes)
+The GUI is now a daily-usable WinSCP Commander, and two bugs that only appeared against REAL servers
+(invisible on localhost) were tracked down and fixed.
+
+GUI/features this round:
+- **Drag & drop**: inter-panel (copy/upload) AND external Finder→panel (import local files/folders,
+  recursive). Resizable+persistent table columns (set once, render only swaps rows). Native file-type
+  icons (QFileIconProvider). Compact transfer-queue rows. Status bar shows selected count + size.
+- **Internal editor** (the classic WinSCP notepad): Find (Ctrl+F), Ln/Col, word-wrap, Save&Close,
+  unsaved-changes prompt. Double-click a file opens it (F3 = OS editor). **Edit-and-watch**: opening
+  a remote file in any editor watches the temp copy (QFileSystemWatcher) and auto-re-uploads on save,
+  shown in the transfer queue. Folder upload (recursive) via drag.
+- **Auth**: SSH **public-key** login (Login key picker; OpenSSH keys auto-converted to .ppk via
+  PuttyTools, temp deleted after connect; password field = passphrase). **Host-key verification**
+  prompt (fingerprint Yes/No, was auto-accepting). **Overwrite confirmation** before transfers
+  (Overwrite/Skip/Cancel). Transfer/delete/mkdir/rename failures now reported (were silent "done").
+- **Open Terminal** (Ctrl+T) launches the system terminal with `ssh user@host -p port`.
+- **Diagnostics**: always-on per-op log /tmp/winscp-native.log + SIGSEGV/SIGABRT crash handler with
+  backtrace (Options > Open diagnostics log file). Opt-in full SSH/SFTP protocol log via
+  WINSCP_SESSIONLOG=1 -> /tmp/winscp-session.log.
+
+Two critical fixes (both localhost-invisible, found via the new logging):
+1. **Random delete/chmod crash** — `TTerminal::FOperationProgress` was never initialized in the
+   constructor; `TryStartOperationWithFile` (delete/chmod/move/calc-size) dereferenced the garbage
+   pointer -> nondeterministic SIGSEGV. Init to NULL in the ctor (UPSTREAM-PATCHES; upstream relies on
+   NULL via a DebugAssert but never sets it).
+2. **Upload stalls at ~3% then "Timeout waiting for server to respond"** — native/putty/src/uxnet.c
+   `ns_try_flush` never called `plug_sent`. PuTTY's `ssh_sent` unthrottles AND queues the next output
+   chunk when the socket send backlog drains; without it, once the socket backlogs (any real/slow
+   network) the first burst went out and the rest never did. Never reproduced on localhost (loopback
+   never backlogs); reproduced by forcing a tiny SO_SNDBUF, fixed, verified byte-perfect (MD5).
+Supporting: GetGlobalOptions() null-guard (logging crashed on native), WaitForMultipleObjects INFINITE
+bug (1ms -> real infinite), g_confirmCb gated to connect-only (no GUI calls from worker threads),
+TSessionLog per-line fflush. Full build + ctest green; Windows tree untouched (source edits guarded
+or correct-everywhere, in UPSTREAM-PATCHES.md).
+
+NEXT: WinSCP feature/UI fidelity batch — dark theme, file-mask filter + select-by-mask, clipboard
+(copy path/URL), new file + duplicate, recursive chmod + richer Properties, swap panels, free space
+in status bar; then tree view, tabs, the F5/F6 copy dialog (target + transfer mode binary/text).
+
+## Branding + GUI fidelity batch (FreeSCP, tabs, tree, bookmarks, toolbar, icon)
+The app is now branded **FreeSCP** (a native macOS/Linux port of WinSCP) and gained the remaining
+high-visibility WinSCP UI:
+- **Session tabs** — multi-session: the bridge went from a single TTerminal to a vector of sessions
+  with an active index (call sites unchanged via g_terminal/g_sessionData/g_password/g_lastParams
+  macros resolving to AS(), the active session). connectSftp pushes a new session/tab; a QTabBar (with
+  a "+" button) switches/closes them, saving+restoring each tab's remote+local paths.
+- **Directory tree** — toggleable, lazy-loaded per panel; remote tree restores the session CWD after
+  probing a subdir; off by default (matches WinSCP Commander).
+- **Bookmarks** menu (Ctrl+B add, jump, remove; persisted).
+- **Copy/Move dialog** (editable target before transfer); **Properties** shows type/size/owner/
+  modified + **recursive chmod**; **select-by-mask** (Ctrl++/-), **create file** (Shift+F4),
+  **copy path/URL** (Ctrl+Shift+C).
+- **Richer toolbar** (New folder / Delete / Properties / Queue+Log toggles).
+- **App icon**: cleaned icon.png (black corners/border flood-filled to transparent) -> winscp.icns,
+  bundled via CMake; CFBundleName=FreeSCP.
+- **Settings**: all QSettings use the default ctor + an org chosen at startup (offscreen/test runs use
+  an isolated "WinSCP-native-port-test" org) so headless test runs can never wipe the user's real
+  saved sites; site Save syncs immediately. Visible strings say FreeSCP; internal names (QSettings
+  org/app, logs, protocols) unchanged so saved sites/prefs keep working.
+
+README.md rewritten for FreeSCP (the gap it fills, ported-engine-vs-rewritten-GUI explanation, build/
+run). NEXT: drag OUT to Finder (export remote by dragging out — macOS file promises), recent-dirs
+dropdown, dark theme, Find files.
+
+## Public release: v0.1.0 (signed + notarized), public repo, website
+FreeSCP shipped its first public macOS build and went public.
+- **Release v0.1.0** — signed (Developer ID) + **notarized** + stapled; stable asset
+  `FreeSCP-macOS-arm64.zip` at `releases/latest/download/...`. Build via
+  `native/scripts/release-macos.sh` (macdeployqt bundles Qt, deep hardened-runtime codesign,
+  notarytool, staple, zip). Self-contained .app.
+- **Repo public** (github.com/oegea/FreeSCP, GPLv3) — LICENSE (GPLv3 + AI-icon exception),
+  CONTRIBUTING (issues yes / code PRs no), .gitignore (build + signing secrets). Secret audit clean
+  (tracked + history): no creds/keys/personal paths; only OpenSSL upstream test fixtures + public
+  Team ID/authorship.
+- **Website** (GitHub Pages, `gh-pages` branch) — https://oegea.github.io/FreeSCP/ — WinSCP-inspired
+  landing: hero, Download-for-macOS (latest), Linux coming-soon, generic-content screenshot, features.
+- **App polish** — app icon (cleaned, bundled, CFBundleName=FreeSCP), branded message boxes
+  (FreeSCP icon, no empty icons), custom About (icon/repo/GPLv3/credit), drag-OUT to Finder (files),
+  empty-host connect error fixed (was garbage), Login test-cred prefill removed, QSettings isolated so
+  test runs can't wipe real sites.
+
+Tomorrow: continue ROADMAP.md (drag-out of folders, recent-dirs dropdown, find files, transfer
+settings binary/text, SSH tunnel). Engine/protocol parity is done; remaining work is GUI/UX + auth.
+
+## Linux x86-64 BUILDS + RUNS — second native platform (same src, same repo)
+
+FreeSCP now compiles and runs on **Linux x86-64** from the identical source tree, no macOS regression.
+Toolchain: clang 18, CMake/Ninja, Qt6 (apt `qt6-base-dev`, libstdc++), OpenSSL 3, libc/libstdc++.
+Build: `cd native && cmake -B build-linux -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+-DCMAKE_BUILD_TYPE=Release && cmake --build build-linux` → `harness/winscp-harness` + `ui-qt/winscp-qt`.
+(Engine REQUIRES clang — `-fshort-wchar` / `-fms-extensions` / `__declspec(property)` / `-Wno-everything`;
+gcc cannot build it.)
+
+Validated on Linux x64: GUI launches + renders the full Commander (dual panes listing real dirs via the
+ported engine's FindFirst, offscreen WINSCP_SHOT). **SFTP end-to-end** against a local sshd: connect,
+auth (password), list, upload, download (byte-correct), mkdir, rename, delete — all green (harness
+WINSCP_XFER/WINSCP_OPS, rc 0). **SCP** connect/list/upload/download works (one non-fatal "Illegal time
+format" warning on a timestamp-preserve path — surfaces as a clean query, not a crash). WebDAV/S3/FTP
+compile + link (their libs neon/expat/libs3/filezilla all build on Linux) but weren't runtime-tested
+this session (no docker/test servers up); they share the same engine + RTL fixes.
+
+What it took (detail in UPSTREAM-PATCHES.md "Linux x86-64 port"). Native-only (no source edit):
+- **`__try`/`__except` macros removed** from rtlcompat/WinCompat.h (kept `__finally`). They collided
+  with libstdc++'s internal `__try`/`__catch` in its standard headers ("expected expression" at every
+  libstdc++ `catch`). The engine never uses `__try`/`__except` (0 sites); libc++ on macOS lacks those
+  macros so it was invisible there. This was THE first blocker (100 errors → gone).
+- **`<cstring>/<cwctype>/<cstdlib>/<math.h>` added** to the force-included WcsCompat.h. libc++ pulls the
+  narrow str*/mem*/wctype/fabs decls transitively; libstdc++ doesn't, so WebDAV/S3/Configuration/Ftp
+  TUs failed to find strcmp/memset/strncpy/towupper/fabs.
+- **Case-exact shim headers** `native/filezilla/casecompat/{Ws2tcpip.h,FileZillaTools.h,
+  transfersocket.h,asyncproxysocketlayer.h,filezillaapi.h}` forwarding to the real (differently-cased)
+  files. macOS's case-insensitive FS hid these `#include` case typos; Linux is case-sensitive. Wired
+  into the winscpcore_ftp group + the filezilla target include paths.
+- **`AFX_COMDAT` → `__attribute__((weak))`** in native/filezilla/compat/afx.h (was empty). MSVC's
+  selectany merges the duplicate `_afxDataNilA`/`_afxPchNilA` definitions (structures.cpp + afx_statics.cpp);
+  GNU ld errors "multiple definition" where ld64 tolerated it. Weak makes the afx_statics defs win.
+
+Source/ edits (guarded — Windows & macOS untouched; in UPSTREAM-PATCHES.md):
+- **defs.h** `HAVE_AES_NI` guarded by `_WIN32`: native build (mac arm + Linux x86) uses software AES.
+  The hand-built aes-ni.c garbles SSH decryption on x86 under clang ("Incoming packet was garbled on
+  decryption"). Software AES is correct (what arm64 uses); AES-NI perf is a later revisit.
+- **Exceptions.h** `FMoreMessages = nullptr` — uninitialized field (Delphi zero-init reliance) crashed
+  the error path on Linux. THE ops-crash root cause.
+- **Terminal.cpp** drop stray `inline` on 1-arg `LogEvent` on Linux only (link fix).
+
+Build scripts: `native/scripts/build-linux.sh` (clang, x86-64) and `native/scripts/build-macos.sh`
+(Apple Silicon, dev build) — both `cmake -G Ninja` + build, print the binary paths.
+
+NEXT for Linux:
+- **Verify the build on arm64 Linux** (future) — same source should compile; HAVE_AES_NI is already 0
+  on arm so no AES-NI concern, but it's untested on aarch64-linux.
+- Runtime-test WebDAV/S3/FTP (spin the docker test servers).
+- Packaging (AppImage / .deb).
+- x86 AES-NI correctness is the one known perf TODO (currently software AES).
+
+## Upstream sync to 6.7.1 + bug-hunt (2026-11-13)
+
+Branch `upstream-sync-6.7.1` (local). Base moved `74a8c03f4` → `82e192fff`; details in
+UPSTREAM-SYNC.md, guarded edits in UPSTREAM-PATCHES.md, lessons in LEARNINGS.md §19.
+
+**Builds (macOS arm64, Xcode 26 / Apple clang 21, Release):** `cmake --build` green for every target
+(rtlcompat, puttycore, puttyplatform, expat, neon, libs3, winscpcore, winscpfilezilla,
+winscp-harness, winscp-qt). `puttycrypto_vs` no longer exists (upstream folded the software crypto
+back into the normal PuTTY build). `ctest` 2/2 — and the tests actually assert now.
+
+**Fixed (all reproduced first, then verified):**
+| Symptom | Cause | Where |
+|---|---|---|
+| Unreadable/garbage error text on connect (unresolvable host) | error string read after free | putty/src/uxnet.c |
+| "Connection refused" surfaced as a 15 s timeout; no IPv6→IPv4 fallback | SO_ERROR consumed twice; later addresses never serviced | uxnet.c, rtlcompat WinSock.cpp |
+| App killed when the peer closed mid-write | SIGPIPE not ignored | uxnet.c |
+| macOS build broken since the Linux commit | recursive case shims; `inline LogEvent` | filezilla/casecompat, Terminal.cpp |
+| `ExtractFilePath`/`LastDelimiter` returned nothing | libc++ wide builtins under -fshort-wchar | rtlcompat ShortWchar.h |
+| Abort right after accepting a host key when the INI is not writable | throwing destructor | HierarchicalStorage.cpp (guarded) |
+| INI + `wscp_*.tmp` written inside the .app bundle | engine default path; DELETE_ON_CLOSE ignored | enginebridge.cpp, SysExtra.cpp |
+| Non-ASCII file names broken on FTP/S3/WebDAV; non-ASCII passwords rejected | UTF8String did not transcode | rtlcompat strings |
+| FTP status/errors shown as `str#NN` | private resource ids | filezilla/compat/TextsFileZilla.h |
+| GUI segfault starting a multi-file transfer (2nd connection) | TObject memory not zero-filled | rtlcompat Object.h |
+| Crash report on every quit with a session open | static destruction order | enginebridge.cpp `shutdown` |
+| Downloading a folder dumped its contents into the target | trailing "/" in FullFileName | enginebridge.cpp |
+| Closing an FTP session: intermittent crash; with >1 FTP session, messages could reach the wrong worker | worker thread never got WM_QUIT (GetMessage always TRUE), its handle was not waitable, one message queue shared by all threads | filezilla/compat/winmsg.cpp, rtlcompat Threading.cpp |
+
+**Verified end to end** (OpenSSH, vsftpd, Apache mod_dav, MinIO — Docker, host-mounted data):
+connect/list, upload+download round trip, mkdir/rename/delete, 40 MB random file with a non-ASCII
+name (byte-identical), directory tree round trip (`diff -r` clean) on **SFTP, SCP, FTP, WebDAV, S3**;
+error paths (unknown host, closed port, black-holed address, wrong password, non-SSH port,
+unwritable INI, server restart mid-session) all end in a readable message and a normal exit; the Qt
+GUI offscreen: connect, 3-item queued download over parallel connections, exit code 0, render checked.
+
+**Not done / known gaps after this sync:**
+- **Linux**: not rebuilt (the Docker VM disk was full). `ShortWchar.h` only acts on clang; the
+  libstdc++ side of `std::wstring` under `-fshort-wchar` is unreviewed.
+- New upstream engine features are compiled in but **not exposed in the UI**: local↔local
+  synchronization (its Windows-shell half is guarded out — needs a native implementation),
+  OpenSSH-agent selection (the Unix agent client is still a stub), configurable checksum commands,
+  WebDAV redirect policy options, large-file editor warning.
+- SCP with a non-UTF-8 server locale shows non-ASCII names as Latin-1 (same as upstream "Auto");
+  the UI has no "UTF-8 file names: On" switch yet.
+- FTP timers are still stubs (`SetTimer`/`KillTimer` in filezilla/compat/winmsg.h): FileZilla's own
+  keep-alive and timeout timers never fire. Two simultaneous FTP sessions are now isolated at the
+  message-queue level but were not exercised; `parallelSupported()` still returns false for FTP.
+- `DWORD` is `unsigned long` (8 bytes) in rtlcompat — no failure traced to it, but it is not the
+  Windows width.
+- Release artifacts (v0.1.1) predate all of the above; a new signed build has not been cut.
+
+## Release pipeline for v0.2.0 (2026-11-13)
+
+Four targets, three files (see the README download table):
+
+| Asset | Built by | Tested by |
+|---|---|---|
+| `FreeSCP-macOS-universal.zip` (arm64 + x86_64, macOS 12+) | `.github/workflows/macos.yml` → `native/scripts/build-macos-universal.sh` (official Qt via aqtinstall, static OpenSSL from source); signed + notarized locally with `native/scripts/release-macos.sh <version> <FreeSCP.app>` | CI: ctest natively and under Rosetta, launch of the staged bundle on both architectures. Locally: `native/scripts/e2e-ssh.sh` on the signed app, natively and with `E2E_RUN="arch -x86_64"` |
+| `FreeSCP-Linux-x86_64.AppImage`, `FreeSCP-Linux-aarch64.AppImage` (glibc 2.35+) | `.github/workflows/linux.yml` on `ubuntu-22.04` / `ubuntu-22.04-arm` → `build-linux.sh` + `package-linux.sh`; attached to the release on `v*` tags | CI: ctest, `e2e-ssh.sh` against a local sshd (SFTP + SCP round trips, tree, failure paths, offscreen GUI), then the AppImage itself under xvfb (connect + queued download) |
+
+Why not Homebrew for the macOS release: its Qt/OpenSSL are single-architecture and built for the
+build machine's macOS version — the v0.2 development build linked that way required macOS 26.
+`build-macos.sh` (Homebrew) remains the quick developer build.
+
+Release procedure: bump `FREESCP_VERSION` (native/ui-qt/CMakeLists.txt) → push → take the
+`FreeSCP-macOS-unsigned` artifact of the macOS workflow → `release-macos.sh` → run `e2e-ssh.sh` on the
+result → `gh release create vX.Y.Z --draft` with the two macOS zips → push the tag (the Linux workflow
+attaches both AppImages) → publish the release → update the version strings on the website (`gh-pages`).
+
+The app now shows a first-launch dialog (and Help → Support FreeSCP): free, GPLv3, no telemetry,
+optional Ko-fi link. "No telemetry" is literal: the engine's usage counters are never sent anywhere.
+(Until 0.3.0 the GUI had no network code at all; since 0.3.1 its only request is the version check
+described at the end of this file, `native/ui-qt/updatecheck.cpp` - the only user of Qt Network.)
+
+## Feature round: connection options, transfer settings, find / sizes / compare (2026-11-16)
+
+### What is new in the GUI
+| Feature | Where | Engine path |
+|---|---|---|
+| **SSH tunnel** (jump host; password or key) | Login > Advanced > Tunnel | `TSessionData::Tunnel*` -> `TTerminal::OpenTunnel` (PuTTY port forwarding) |
+| **Proxy**: SOCKS4, SOCKS5, HTTP (with credentials) | Login > Advanced > Proxy | `ProxyMethod/Host/Port/...` (PuTTY, FileZilla, neon) |
+| **Authentication prompts**: password, key passphrase, keyboard-interactive / 2FA, proxy password | dialog during login | `OnPromptUser` -> `engine::setPromptCallback` |
+| **FTPS** explicit / implicit, **FTP active mode** | Login (Encryption), Advanced > Connection | `Ftps`, `FtpPasvMode` |
+| **UTF-8 file names** Auto/On/Off, **server CR/LF** | Advanced > Connection | `NotUtf`, `EOLType` |
+| **Transfer Settings**: binary/text/automatic, preserve timestamp, set permissions, name case, file mask, exclude hidden, newer only, resume (.filepart), speed limit | Options menu, Preferences > Transfer, Copy/Move dialog | `TCopyParamType` (`FillCopyParam`) |
+| **Find Files** (local + remote, WinSCP masks, Focus) | Commands > Find Files (Ctrl+Alt+F) | `TTerminal::FilesFind` / `engine::localFind` |
+| **Calculate Directory Sizes** | Files menu / context menu (Shift+Alt+Enter) | `TTerminal::CalculateFilesSize` |
+| **Compare Directories** (by time and/or size) | Commands (Shift+F2), criteria in Preferences > Panels | `panelcompare.h` |
+| **Compare Files** side by side, local vs remote | Files menu / context menu (Ctrl+Shift+D) | `textdiff.{h,cpp}` + `diffview.cpp` |
+| Listing errors are shown (never an empty panel); Open Terminal uses `ssh -J` for tunnelled sessions | | `OnShowExtendedException` |
+
+New UI sources: `logindialog`, `transferdialog`, `finddialog`, `diffview`, `textdiff`, `panelcompare.h`,
+`uicommon.h`. New targets: `freescp-bridge-cli` (drives the bridge API without Qt), `test_uilogic`,
+`test_wintime`.
+
+### Bugs found by running the new features end to end (all fixed)
+| Symptom | Cause | Where |
+|---|---|---|
+| Every upload stamped the remote file **2009-04-22**; downloads kept "now"; remote listings in UTC | `GetFileTime`/`SetFileTime`/`GetTimeZoneInformation`/`FileTimeTo*` were stubs ("local == UTC"), and `FILETIME` was 16 bytes while the engine reads it as an `__int64` | new `rtlcompat/src/WinTime.cpp`, `wintypes.h` |
+| A timestamp at exactly midnight shown as `Dec 31 24:00:00` | day/time split of a double without rounding to the millisecond | `SysExtra.cpp` `Split` |
+| Synchronize: local times were garbage; "delete local" could not remove a directory with content | `FindData.ftLastWriteTime` never filled; engine builds `dir\\file` paths | `SysExtra.cpp`, guarded `Common.cpp` |
+| `FindFirst("<dir>/<name>")` returned the first entry of the directory for ANY name | mask/name part of the path ignored | `SysExtra.cpp` |
+| WebDAV listings had no timestamps | `TFormatSettings` month names empty (RFC 1123 date parse) | `SysUtils.hpp` |
+| FTP: server time zone never detected (files off by the UTC offset; sync re-uploaded everything) | `wcstol` not shimmed for 2-byte `wchar_t` (MDTM parse); `Variant` -> integer truncated instead of rounding | `WcsCompat`, `SysUtils.hpp` |
+| SSH tunnel: crash, then "host key wasn't verified", then hang on disconnect | no listening sockets in `uxnet.c`; `GetCurrentThreadId` 64-bit vs the engine's `unsigned int`; `ResumeThread` returned 0; `StoredSessions` NULL | `uxnet.c`, `Threading.cpp`, `enginebridge.cpp` |
+| A tunnel accepted only its first forwarded connection (S3 hung) | `SO_ACCEPTCONN` cannot be queried on macOS; listeners are now declared explicitly | `WinSock.cpp`, `uxnet.c`, FileZilla `winmsg.cpp` |
+| **100% of a CPU core** while the engine waited on the network (permanent with a tunnel open) | `FD_READ`/`FD_WRITE` re-reported at level instead of Windows' edge semantics | `WinSock.cpp`, `uxnet.c` |
+| SOCKS proxies got a garbage destination | `sk_addrcopy` copied the sockaddr instead of the address bytes; unresolved names not typed `ADDRTYPE_NAME` | `uxnet.c` |
+| FTP through any proxy hung after login | FIONREAD wrote 4 bytes into an 8-byte `DWORD`; `recv` blocked where FileZilla expects `WSAEWOULDBLOCK` | FileZilla `compat/winsock2.h` |
+| FTPS never completed its handshake | `SetLastError` was a no-op and FileZilla's `GetLastError()` returned 0 | `SysExtra.cpp`, FileZilla `compat/afx.h` |
+| Speed limit ignored for a transfer in the program's first second | `GetTickCount` counted from process start | `SysExtra.cpp` |
+| "Exclude hidden files" did nothing for local files | dot files not flagged `faHidden` | `SysExtra.cpp` |
+| Text-mode downloads would gain a CR per line | `GetLocalEOLType()` hard-coded to CRLF | guarded `Configuration.cpp` |
+| 2FA with two fields answered field 0 with the password and left the code empty | headless `IsPasswordOrPassphrasePrompt` stub broader than upstream | `harness/interface_stub.cpp` |
+| Unreadable remote directory shown as an empty one; rename/mkdir errors lost | `OnShowExtendedException` not handled by the bridge | `enginebridge.cpp` |
+| Synchronize listed deletions it would not perform | unchecked checklist items were shown | `enginebridge.cpp` |
+| FTP download did not keep the file time | obsolete `#ifdef` guard (the handle is an fd now) | `FtpFileSystem.cpp` (guard removed) |
+| Random() always 0 (tunnel port "randomization") | stub | `SysExtra.cpp` |
+
+### Verified end to end (macOS arm64; OpenSSH x2, vsftpd x3, Apache mod_dav, MinIO, local proxies, asyncssh 2FA servers)
+`native/scripts/e2e/servers.sh up <dir>` starts everything; `native/scripts/e2e-features.sh <build> <dir>`
+runs **217 checks** (conn 12, auth 11, tunnel 14, proxy 20, ftps 4, xfer 48, resume 9, find 48, sync 20,
+gui 31 — some need a LAN address / asyncssh and are skipped otherwise) and passes; so do `ctest` (4),
+`e2e-ssh.sh`, and the LEARNINGS §19 matrix on FTP / WebDAV / S3 (40 MB non-ASCII file, tree round
+trip) with its failure paths. Throughput after the event-loop change: 200 MB SFTP up + down in 6.7 s
+direct, 7.7 s through a tunnel; an idle tunnelled session uses ~0.15 s CPU per 10 s.
+
+### Not done / known limits
+- **Linux not rebuilt** with any of this (the Docker VM disk was full again). `WinTime.cpp`, `uxnet.c`
+  and `WinSock.cpp` have a Linux path by construction (`st_mtim`, glibc `tm_gmtoff`, `MSG_DONTWAIT`)
+  but it is unverified; the CI workflow will be the first to compile it.
+- Checked only offscreen + by rendering every dialog to PNG; nobody has clicked through the new
+  dialogs on a real display yet.
+- SFTP/SCP connections to `localhost` are never sent through a proxy (PuTTY/WinSCP default); there is
+  no "proxy local addresses too" switch.
+- FTP through an SSH tunnel: only the control connection is tunnelled (as in WinSCP); listing fails
+  with the server's message.
+- Resume was exercised on SFTP only. FTP resume (REST) and the S3/WebDAV paths were not tested.
+- Site passwords (now also tunnel/proxy passwords) are still stored as typed in the settings store;
+  there is no master password yet.
+- Transfer Settings are global (as edited from the Copy dialog they become the new defaults), not
+  per transfer or per site; no presets.
+- Compare Files is read-only and loads both files in memory (text view up to 16 MB each).
+- S3 "rename directory" in the harness ops test reports `rename ok=0` (unchanged, pre-existing).
+- (FTP timers: implemented in the bug hunt below.) Two simultaneous FTP sessions in tabs work for
+  listing and transfers (adversarial suite); `parallelSupported()` still returns false for FTP.
+
+
+## Pre-release bug hunt for 0.3.0 (2026-11-16)
+
+Method: an independent read-only review of the whole diff, a second build with **AddressSanitizer**
+(every suite re-run under it), and an adversarial suite (`native/scripts/e2e-adversarial.sh`, 84
+checks) aimed at what could break: time zones, cancellation, servers dying or freezing, descriptor
+limits, symlinks, odd file names, several sessions in tabs, sites saved by 0.2.
+
+| Found | Cause | Fix |
+|---|---|---|
+| **Every transferred file leaked a descriptor**, and closing local file N destroyed wait object N (another session's socket event -> that session hung) | `CloseHandle` only knew wait objects, and their ids shared the small-integer space of fds | `Threading.cpp`: ids start at 0x40000000, `CloseHandle` closes fds (500 files with `ulimit -n 256`: 5 fds before and after, all protocols) |
+| Synchronize "delete local" **followed directory symlinks** and deleted the target's contents (reachable only since recursive delete started working) | attribute follows links | guarded `Common.cpp`: a link is unlinked |
+| `winscp_wcslen` (and any hand-written wchar loop) compiled into a call to the system 4-byte `wcslen` with LLVM 20+ / Xcode 26: wrong lengths, out-of-bounds reads | loop-idiom recognition trusts `-fshort-wchar` to describe libc | `-fno-builtin-wcslen` wherever `-fshort-wchar` is used (found by ASan) |
+| **FTP never timed out** (frozen server = endless wait) and never sent keep-alives | `SetTimer` was a stub | timers in `filezilla/compat/winmsg.cpp`, delivered low-priority like `WM_TIMER` |
+| ...which exposed: crash in the FTP keep-alive; false "timeout" at the end of a long upload | `(rand()*4)/(RAND_MAX+1)` overflows with POSIX `RAND_MAX`; timer handled before the "transfer ended" message | `rand()`/`RAND_MAX` Windows-ranged for FileZilla; timer priority |
+| FTP: cancel a download the server had already finished sending -> next command hung | FileZilla skips "the next reply" although the 226 was already consumed | guarded `FtpControlSocket.cpp` |
+| Downloaded `what?.txt` saved as `what%3F.txt`; local `a%20b` uploaded as `a b` | Windows invalid-character replacement | `InvalidCharsReplacement = NoReplacement` |
+| A local file whose name contains `*`, `?` looked up as a mask | `FindFirst` | an existing path is taken literally first |
+| A tab returned to the directory it was opened in after another session was opened | tab state saved only on tab switch | saved before connecting |
+| Copy/Move to a typed target that cannot be opened transferred into the previous directory | no check after navigation | cancelled with the error |
+| PuTTY socket list shared by threads without a lock; `GetTickCount` 64-bit vs the engine's 32-bit copies; EOF kept signalling the event loop; quit during a background job touched freed objects; `TFileStream` narrowed non-ASCII paths; diff view rows shifted by lone CR / U+2028; shared error string between parallel workers; `wcstol` macro form (libstdc++) | review findings | fixed individually |
+| Sites saved by 0.2 on port 443 lost their TLS setting | key did not exist before | inferred on load |
+
+**Final verification of the release code (macOS arm64):** `ctest` 4/4 · `e2e-ssh.sh` ALL OK ·
+LEARNINGS §19 matrix on FTP/WebDAV/S3 + failure paths OK · `e2e-features.sh` **217/217** ·
+`e2e-adversarial.sh` **84/84** · `ctest`, `e2e-ssh.sh`, `e2e-features.sh` and `e2e-adversarial.sh`
+again on an AddressSanitizer build: all pass, no report.
+
+### Known limits (documented, not bugs of this port)
+- **SCP** lists the server's own clock (no zone information in `ls`); WinSCP's "time zone offset"
+  session setting is not exposed yet. Timestamps of transferred files are exact.
+- **FTP servers without MLSD** (vsftpd): one detected offset is applied to every listed file, so a
+  file dated on the other side of a DST change is shown, and downloaded, one hour off - upstream
+  behaviour. Uploads are exact.
+- A local file name containing a **backslash** is uploaded under the part after it (the engine
+  treats `\` as a separator).
+- A file explicitly selected but excluded by the Transfer Settings **file mask** is skipped
+  silently and its queue row reads "done" (the engine reports success).
+- Linux: built and tested only by CI.
+
+### Linux (CI, 2026-11-16)
+The feature suite now also runs on the x86-64 Linux runner (`linux.yml`), which until 0.3.0 only
+exercised SFTP/SCP. First run: **FTP did not work on Linux at all** - every listing and transfer
+timed out in passive mode. Linux reports a created-but-unconnected socket as writable and readable
+(BSD/macOS report nothing), the `WSAAsyncSelect` emulation posted `FD_CONNECT` before `connect()`
+and its one-shot latch dropped the real one. Fixed in `filezilla/compat/winmsg.cpp`: a socket is
+watched only once it is connecting, connected or listening. The code involved predates this round,
+so 0.2.0 on Linux was very probably affected too.
+Result on the runner after the fix: 214/217, the three misses being a test-setup step that could
+not overwrite a server-owned file on a Linux host (fixed in the script). The `v0.3.0` tag build:
+**217/217** on Linux x86-64. aarch64 runs the unit tests, the SFTP/SCP end-to-end test and the AppImage smoke
+test only (the test-server images are x86-64).
+
+### Release v0.3.0 (2026-11-16)
+Same pipeline as v0.2.0. The signed + notarized universal app was tested with `e2e-ssh.sh`
+natively and under Rosetta (`E2E_RUN="arch -x86_64"`), with `E2E_QPA=native`: the staged bundle
+ships only the cocoa platform plugin, so the default offscreen GUI run aborts in Qt start-up.
+The MinIO test image is no longer downloadable; `servers.sh` falls back to `bitnamilegacy/minio`.
+
+## 0.3.1: "a newer version is available" (2026-11-17)
+
+On startup (at most once every 24 h) the app asks `api.github.com/repos/oegea/FreeSCP/releases/latest`
+for the latest tag and, if it is later than its own version, shows a notice with **Update...** (opens
+`freescp.com/releases.html#latest` in the browser) and **Close**. Nothing is downloaded or installed.
+Preferences > Environment switches it off; Help > Check for Updates asks on demand.
+
+- `native/ui-qt/updatecheck.{h,cpp}` (Qt Network, the app's only own request; User-Agent "FreeSCP"
+  with no version, no identifiers), `versioncmp.h` (numeric comparison, unit-tested).
+- Failure policy: any problem = no notice. Total time limit 12 s, answer limit 512 KB, at most 3
+  redirects, a bad certificate ends the request, only a tag of the exact form `v1.2.3` is believed.
+  Quitting with the request open cancels it. Nothing is written except two settings keys.
+- Verified on macOS: newer / same / older / malformed answers, HTTP 404 and 500, refused
+  connection, a server that never answers, one that drips, an endless answer, a redirect loop, a
+  truncated answer, markup or control characters in the tag, quitting mid-request - normal and
+  AddressSanitizer builds, exit code 0 and no report every time; plus one real request to GitHub.
+  `e2e-features.sh` has seven checks for it (answers come from local files).
+- Packaging: Linux AppImage bundles Qt's TLS plugin (`package-linux.sh`); macOS gets it from
+  `macdeployqt`. Verified for the v0.3.1 release: CI runs the AppImage with an HTTPS test answer
+  (`freescp.com/update-test.json`, step "Update check works inside the AppImage") on x86-64 and
+  aarch64; the signed macOS app was checked against that file and against GitHub, natively and
+  under Rosetta (the first translated run takes several seconds longer; later ones ~2 s).
+- Released as **v0.3.1** (2026-11-17): Linux tag build 224/224 on `e2e-features.sh`.
+- Test hook: `WINSCP_UPDATE_URL` (any URL, including `file://`). Scripted/offscreen runs never make
+  the request unless it is set.

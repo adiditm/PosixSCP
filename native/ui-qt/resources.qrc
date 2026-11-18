@@ -1,0 +1,46 @@
+<RCC>
+  <qresource prefix="/">
+    <file alias="winscp.png">winscp.png</file>
+    <file alias="posixscp.png">posixscp.png</file>
+    <file alias="connecting.png">connecting.png</file>
+    <file alias="connecting.svg">connecting.svg</file>
+    <file alias="site.png">icons/site.png</file>
+    <file alias="newsite.png">icons/newsite.png</file>
+    <file alias="folder.png">icons/folder.png</file>
+    <file alias="workspace.png">icons/workspace.png</file>
+    <file alias="menu_edit.png">icons/edit.png</file>
+    <file alias="menu_open.png">icons/open.png</file>
+    <file alias="menu_upload.png">icons/upload.png</file>
+    <file alias="menu_download.png">icons/download.png</file>
+    <file alias="menu_duplicate.png">icons/duplicate.png</file>
+    <file alias="menu_move.png">icons/move.png</file>
+    <file alias="menu_delete.png">icons/delete.png</file>
+    <file alias="menu_rename.png">icons/rename.png</file>
+    <file alias="menu_copy.png">icons/copy.png</file>
+    <file alias="menu_properties.png">icons/properties.png</file>
+    <file alias="menu_settings.png">icons/settings.png</file>
+    <file alias="menu_terminal.png">icons/terminal.png</file>
+    <file alias="tb_sync_browse.png">icons/tb_sync_browse.png</file>
+    <file alias="tb_compare_dirs.png">icons/tb_compare_dirs.png</file>
+    <file alias="tb_synchronize.png">icons/tb_synchronize.png</file>
+    <file alias="tb_console.png">icons/tb_console.png</file>
+    <file alias="tb_terminal_ssh.png">icons/tb_terminal_ssh.png</file>
+    <file alias="tb_refresh.png">icons/tb_refresh.png</file>
+    <file alias="tb_preferences.png">icons/tb_preferences.png</file>
+    <file alias="tb_queue.png">icons/tb_queue.png</file>
+    <file alias="tb_globe.png">icons/tb_globe.png</file>
+    <file alias="tb_new_tab.png">icons/tb_new_tab.png</file>
+    <file alias="nav_back.png">icons/nav_back.png</file>
+    <file alias="nav_fwd.png">icons/nav_fwd.png</file>
+    <file alias="nav_up.png">icons/nav_up.png</file>
+    <file alias="nav_root.png">icons/nav_root.png</file>
+    <file alias="nav_home.png">icons/nav_home.png</file>
+    <file alias="nav_refresh.png">icons/nav_refresh.png</file>
+    <file alias="nav_tree.png">icons/nav_tree.png</file>
+    <file alias="nav_bookmarks.png">icons/nav_bookmarks.png</file>
+    <file alias="nav_filter.png">icons/nav_filter.png</file>
+    <file alias="btn_select_plus.png">icons/btn_select_plus.png</file>
+    <file alias="btn_select_minus.png">icons/btn_select_minus.png</file>
+    <file alias="btn_new.png">icons/btn_new.png</file>
+  </qresource>
+</RCC>

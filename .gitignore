@@ -1,0 +1,28 @@
+# PosixSCP build output & local cruft
+native/build/
+native/**/build/
+native/build-*/
+native/build-deps/
+build/
+build-*/
+*.app/
+*.dSYM/
+*.AppImage
+*.tar.gz
+*.zip
+dist/
+
+# OS / Editor cruft
+.DS_Store
+*.swp
+*.bak
+.idea/
+.vscode/
+
+# Signing / secrets
+.env*
+*.p12
+*.cer
+*.provisionprofile
+*.ini
+!translations/*.ini
