@@ -1092,7 +1092,7 @@ int main(int argc, char ** argv)
   }
   if (argc > 1 && QString(argv[1]) == "--test-advanced") {
     engine::ConnectOptions o;
-    loadSite("DXN/IndiaOBSParts-AUCloud_India_Test", o);
+    loadSite("ExampleSite", o);
     showAdvancedDialog(nullptr, o);
     return 0;
   }
@@ -1127,6 +1127,32 @@ int main(int argc, char ** argv)
       fprintf(stderr, "[PosixSCP] Successfully imported %d site(s) and workspaces from %s\n",
               cnt, iniPath.toUtf8().constData());
       return 0;
+    }
+  }
+
+  // Auto-import from WinSCP.ini if there are no saved sites yet
+  if (savedSiteNames().isEmpty()) {
+    QString winscpCandidate;
+#ifdef Q_OS_MACOS
+    QDir outerDir(appDir + "/../../..");
+    if (outerDir.exists("WinSCP.ini")) winscpCandidate = outerDir.filePath("WinSCP.ini");
+#endif
+    if (winscpCandidate.isEmpty() && QFile::exists(appDir + "/WinSCP.ini")) {
+      winscpCandidate = appDir + "/WinSCP.ini";
+    }
+    if (!winscpCandidate.isEmpty()) {
+      QFile f(winscpCandidate);
+      if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QString preview = QString::fromUtf8(f.read(32768));
+        f.close();
+        if (preview.contains("[Sessions\\") || preview.contains("[Sessions/")) {
+          QString err;
+          int cnt = importWinScpIniFile(winscpCandidate, &err);
+          if (cnt > 0) {
+            fprintf(stderr, "[PosixSCP] Auto-imported %d site(s) from %s\n", cnt, winscpCandidate.toUtf8().constData());
+          }
+        }
+      }
     }
   }
   { QSettings s;

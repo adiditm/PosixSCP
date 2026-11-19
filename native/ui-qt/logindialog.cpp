@@ -1024,8 +1024,9 @@ int importWinScpIniFile(const QString & filePath, QString * outError)
 
 static int importWinScpIni(QWidget * parent)
 {
-  QString initialDir = "/Volumes/DataMac/Programs/WinSCP-6.5.1-Portable";
-  if (!QDir(initialDir).exists()) initialDir = QDir::homePath();
+  QString initialDir = QDir::homePath();
+  QString pIni = portableIniPath();
+  if (!pIni.isEmpty()) initialDir = QFileInfo(pIni).absolutePath();
   QString path = QFileDialog::getOpenFileName(parent, "Import Sites from WinSCP.ini",
                                               initialDir, "WinSCP INI (*.ini *.cfg);;All Files (*)");
   if (path.isEmpty()) return 0;
