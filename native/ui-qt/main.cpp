@@ -68,6 +68,8 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QDir>
+#include <QColorDialog>
+#include <QPainter>
 #include <QFile>
 #include <QFileInfo>
 #include <QFileIconProvider>
@@ -416,6 +418,8 @@ public:
     FTree = new QTreeView; FTreeModel = new QStandardItemModel(this);
     FTree->setModel(FTreeModel); FTree->setHeaderHidden(true); FTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     FTree->hide();
+    FTree->installEventFilter(this);
+    FTree->viewport()->installEventFilter(this);
     QObject::connect(FTree, &QTreeView::expanded, this, [this](const QModelIndex & ix){ treeExpand(ix); });
     QObject::connect(FTree, &QTreeView::clicked, this, [this](const QModelIndex & ix){
       if (FTreePopulating) return;
@@ -808,12 +812,37 @@ public:
     QStringList out;
     if (!FView->selectionModel()) return out;
     const auto rows = FView->selectionModel()->selectedRows();
-    for (const auto & ix : rows)
+    if (rows.isEmpty())
     {
-      int r = ix.row();
-      if (r < 0 || r >= (int)FEntries.size() || FEntries[r].isParent) continue;
-      if (FEntries[r].isDir && !includeDirs) continue;
-      out << u8(FEntries[r].name);
+      // Fallback 1: gather unique rows from selectedIndexes if selectedRows was empty
+      QSet<int> rowSet;
+      for (const auto & ix : FView->selectionModel()->selectedIndexes()) rowSet.insert(ix.row());
+      for (int r : rowSet)
+      {
+        if (r < 0 || r >= (int)FEntries.size() || FEntries[r].isParent) continue;
+        if (FEntries[r].isDir && !includeDirs) continue;
+        out << u8(FEntries[r].name);
+      }
+    }
+    else
+    {
+      for (const auto & ix : rows)
+      {
+        int r = ix.row();
+        if (r < 0 || r >= (int)FEntries.size() || FEntries[r].isParent) continue;
+        if (FEntries[r].isDir && !includeDirs) continue;
+        out << u8(FEntries[r].name);
+      }
+    }
+    // Fallback 2: when cursor is pointing to an item without active multi-selection
+    if (out.isEmpty() && FView->currentIndex().isValid())
+    {
+      int r = FView->currentIndex().row();
+      if (r >= 0 && r < (int)FEntries.size() && !FEntries[r].isParent) {
+        if (!FEntries[r].isDir || includeDirs) {
+          out << u8(FEntries[r].name);
+        }
+      }
     }
     return out;
   }
@@ -889,6 +918,13 @@ protected:
       if (ke->key() == Qt::Key_Tab) { if (onSwitchPanel) onSwitchPanel(); return true; }
       if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
       { activate(FView->currentIndex().row()); return true; }
+      if (ke->modifiers() == Qt::NoModifier)
+      {
+        if (ke->key() == Qt::Key_F5) { if (onActivated) onActivated(); if (onUpload) onUpload(); return true; }
+        if (ke->key() == Qt::Key_F6) { if (onActivated) onActivated(); if (onMove) onMove(); return true; }
+        if (ke->key() == Qt::Key_F7) { if (onActivated) onActivated(); if (onNewDir) onNewDir(); return true; }
+        if (ke->key() == Qt::Key_F8) { if (onActivated) onActivated(); if (onDelete) onDelete(); return true; }
+      }
     }
     // --- drag & drop between panels ---
     if (obj == FView->viewport())
@@ -1058,6 +1094,78 @@ private:
 };
 
 //===========================================================================
+
+struct SessionTabInfo {
+  QString label;
+  QString siteName;
+  engine::ConnectOptions opts;
+  bool isConnected = false;
+  int engineIndex = -1;
+  QColor tabColor;
+  QString remotePath;
+  QString localPath;
+};
+
+static const struct {
+  const char * name;
+  const char * hex;
+} kTabColors[] = {
+  { "Light Orange", "#fb923c" },
+  { "Yellow",       "#facc15" },
+  { "Green",        "#4ade80" },
+  { "Cyan",         "#22d3ee" },
+  { "Sky Blue",     "#38bdf8" },
+  { "Red",          "#f87171" },
+  { "Magenta",      "#f472b6" },
+  { "Purple",       "#c084fc" },
+  { "Indigo",       "#818cf8" },
+  { "Gray",         "#9ca3af" },
+  { "Dark Blue",    "#1d4ed8" },
+  { "Dark Green",   "#15803d" },
+};
+
+static QIcon makeTabIcon(const QColor & color, bool connected)
+{
+  QPixmap pm(32, 32);
+  pm.fill(Qt::transparent);
+  QPainter p(&pm);
+  p.setRenderHint(QPainter::Antialiasing, true);
+
+  QColor screenColor = color.isValid() ? color : QColor(59, 130, 246); // default blue #3b82f6
+
+  // Monitor frame
+  p.setPen(QPen(QColor(55, 65, 81), 2.0));
+  p.setBrush(QColor(243, 244, 246));
+  p.drawRoundedRect(3, 3, 26, 19, 2.5, 2.5);
+
+  // Screen interior
+  p.setPen(Qt::NoPen);
+  p.setBrush(screenColor);
+  p.drawRoundedRect(5, 5, 22, 15, 1.5, 1.5);
+
+  // Screen inner reflection highlight
+  p.setBrush(QColor(255, 255, 255, 70));
+  p.drawRect(6, 6, 20, 5);
+
+  // Monitor stand
+  p.setPen(QPen(QColor(75, 85, 99), 2.0));
+  p.setBrush(QColor(75, 85, 99));
+  p.drawLine(16, 22, 16, 26);
+  p.drawRoundedRect(10, 26, 12, 3, 1.0, 1.0);
+
+  // Disconnected indicator (red badge with white cross in bottom right)
+  if (!connected) {
+    p.setPen(QPen(Qt::white, 1.5));
+    p.setBrush(QColor(239, 68, 68)); // red #ef4444
+    p.drawEllipse(18, 18, 12, 12);
+    // Draw small white 'X'
+    p.drawLine(21, 21, 27, 27);
+    p.drawLine(27, 21, 21, 27);
+  }
+
+  p.end();
+  return QIcon(pm);
+}
 
 int main(int argc, char ** argv)
 {
@@ -1288,7 +1396,20 @@ int main(int argc, char ** argv)
     "  background: #fbfbfb;"
     "}"
   );
-  tabBar->addTab(QIcon(":/site.png"), "Local");
+  static std::vector<SessionTabInfo> g_tabs;
+  static int curTab = 0;
+  static bool tabSwitching = false;
+  {
+    SessionTabInfo t0;
+    t0.label = "Local";
+    t0.isConnected = false;
+    t0.engineIndex = -1;
+    t0.localPath = u8(engine::homeDir());
+    t0.remotePath = u8(engine::homeDir());
+    g_tabs.push_back(t0);
+  }
+  tabBar->addTab(makeTabIcon(QColor(), true), "Local");
+  tabBar->setContextMenuPolicy(Qt::CustomContextMenu);
 
   auto * tabRow = new QWidget;
   auto * tabRowLay = new QHBoxLayout(tabRow);
@@ -1329,6 +1450,7 @@ int main(int argc, char ** argv)
   FilePanel * active = left;
   static QString remoteHome = "/";
   static QString connHost, connUser; static int connPort = 22; static bool connSsh = false;  // for Open Terminal
+  static engine::ConnectOptions connOpts;   // the active session's options (Open Terminal, copy URL)
 
   auto updateStatuses = [&] {
     left->setStatusLine(left->statusText());
@@ -1685,68 +1807,191 @@ int main(int argc, char ** argv)
     return showAuthPrompt(&window, rq, answers);
   });
 
-  //--- session tabs -------------------------------------------------------
-  static int curTab = -1;        // previously-active tab (for save-on-switch)
-  static bool tabSwitching = false;
-  // After a successful connect: add a tab for the new (already-active) bridge session.
-  auto addSessionTab = [&](const QString & label) {
-    tabSwitching = true;
-    int i = -1;
-    if (tabBar->count() == 1 && tabBar->tabText(0) == "Local") {
-      tabBar->setTabText(0, label);
-      i = 0;
-    } else {
-      i = tabBar->addTab(QIcon(":/site.png"), label);
-    }
-    tabBar->setTabData(i, QStringList{ right->path(), left->path() });   // [remote, local]
-    tabBar->setCurrentIndex(i);
-    curTab = i;
-    tabRow->setVisible(true);
-    tabSwitching = false;
+  //--- session tabs (WinSCP multi-tab & reconnect) -------------------------
+  std::function<bool(const engine::ConnectOptions &, const QString &, int)> connectWithTarget;
+  auto connectWith = [&](const engine::ConnectOptions & o, const QString & siteName = QString(), int targetTabIndex = -1) -> bool {
+    return connectWithTarget(o, siteName, targetTabIndex);
   };
-  // Switch panels to reflect tab i (assumes engine session i is/should be active).
+
   auto activateTab = [&](int i) {
-    engine::switchSession(i);
-    right->setRemote(tabBar->tabText(i));
-    QStringList st = tabBar->tabData(i).toStringList();
-    if (st.size() >= 1 && !st[0].isEmpty()) right->navigate(st[0]);
-    if (st.size() >= 2 && !st[1].isEmpty()) left->navigate(st[1]);
+    if (i < 0 || i >= (int)g_tabs.size()) return;
+    auto & tab = g_tabs[i];
     curTab = i;
-    if (right->isRemote())
-      window.setWindowTitle(QString("%1 \xE2\x80\x93 %2 \xE2\x80\x93 PosixSCP").arg(right->path(), tabBar->tabText(i)));
+    if (tab.isConnected && tab.engineIndex >= 0) {
+      engine::switchSession(tab.engineIndex);
+      right->setRemote(tab.label + " \xE2\x80\x94 " + protocolName(tab.opts.protocol));
+      if (!tab.remotePath.isEmpty()) right->navigate(tab.remotePath);
+      if (!tab.localPath.isEmpty()) left->navigate(tab.localPath);
+      connOpts = tab.opts;
+      connHost = u8(tab.opts.host); connUser = u8(tab.opts.user); connPort = tab.opts.port;
+      connSsh = (tab.opts.protocol == engine::Protocol::Sftp || tab.opts.protocol == engine::Protocol::Scp);
+      actDisconnect->setEnabled(true);
+      actDisconnect->setToolTip("Disconnect Session (Ctrl+D)");
+      window.setWindowTitle(QString("%1 \xE2\x80\x93 %2 \xE2\x80\x93 PosixSCP").arg(right->path(), tab.label));
+    } else if (!tab.opts.host.empty()) {
+      right->setRemote(QString("[Disconnected] %1").arg(tab.label));
+      if (!tab.localPath.isEmpty()) left->navigate(tab.localPath);
+      connOpts = tab.opts;
+      connHost = u8(tab.opts.host); connUser = u8(tab.opts.user); connPort = tab.opts.port;
+      connSsh = (tab.opts.protocol == engine::Protocol::Sftp || tab.opts.protocol == engine::Protocol::Scp);
+      actDisconnect->setEnabled(true);
+      actDisconnect->setToolTip("Reconnect Session (Ctrl+R)");
+      window.setWindowTitle(QString("[Disconnected] %1 \xE2\x80\x93 PosixSCP").arg(tab.label));
+      window.statusBar()->showMessage(QString("Disconnected from %1 — Press Ctrl+R or Right-click Tab to Reconnect").arg(tab.label));
+    } else {
+      right->setLocal();
+      if (!tab.remotePath.isEmpty()) right->navigate(tab.remotePath);
+      if (!tab.localPath.isEmpty()) left->navigate(tab.localPath);
+      actDisconnect->setEnabled(false);
+      window.setWindowTitle("PosixSCP");
+    }
+    updateStatuses();
   };
+
   QObject::connect(tabBar, &QTabBar::currentChanged, [&](int i) {
     if (tabSwitching || i < 0) return;
-    if (curTab >= 0 && curTab < tabBar->count())                         // save outgoing tab's paths
-      tabBar->setTabData(curTab, QStringList{ right->path(), left->path() });
-    tabSwitching = true; activateTab(i); tabSwitching = false;
+    if (curTab >= 0 && curTab < (int)g_tabs.size()) {
+      g_tabs[curTab].remotePath = right->path();
+      g_tabs[curTab].localPath = left->path();
+    }
+    tabSwitching = true;
+    activateTab(i);
+    tabSwitching = false;
   });
+
   auto closeTab = [&](int i) {
-    if (busy() || i < 0 || i >= tabBar->count()) return;
-    if (tabBar->count() == 1 && tabBar->tabText(0) == "Local") {
+    if (busy() || i < 0 || i >= (int)g_tabs.size()) return;
+    if (g_tabs.size() == 1 && g_tabs[0].label == "Local") {
       right->navigate(u8(engine::homeDir()));
       return;
     }
     tabSwitching = true;
-    engine::closeSession(i);
+    if (g_tabs[i].isConnected && g_tabs[i].engineIndex >= 0) {
+      int closedIdx = g_tabs[i].engineIndex;
+      engine::closeSession(closedIdx);
+      for (auto & t : g_tabs) {
+        if (t.engineIndex > closedIdx) t.engineIndex--;
+      }
+      g_tabs[i].engineIndex = -1;
+    }
+    g_tabs.erase(g_tabs.begin() + i);
     tabBar->removeTab(i);
-    if (tabBar->count() == 0) {
-      tabBar->addTab(QIcon(":/site.png"), "Local");
+    if (g_tabs.empty()) {
+      SessionTabInfo lt;
+      lt.label = "Local";
+      lt.isConnected = false;
+      lt.engineIndex = -1;
+      lt.localPath = u8(engine::homeDir());
+      lt.remotePath = u8(engine::homeDir());
+      g_tabs.push_back(lt);
+      tabBar->addTab(makeTabIcon(QColor(), true), "Local");
       curTab = 0;
-      right->setLocal(); right->navigate(u8(engine::homeDir()));
-      actDisconnect->setEnabled(false); window.setWindowTitle("PosixSCP");
+      right->setLocal();
+      right->navigate(u8(engine::homeDir()));
+      actDisconnect->setEnabled(false);
+      window.setWindowTitle("PosixSCP");
     } else {
-      int ni = qMin(i, tabBar->count() - 1);
-      tabBar->setCurrentIndex(ni); activateTab(ni);
+      int ni = qMin(i, (int)g_tabs.size() - 1);
+      tabBar->setCurrentIndex(ni);
+      activateTab(ni);
     }
     tabSwitching = false;
   };
   QObject::connect(tabBar, &QTabBar::tabCloseRequested, [&](int i) { closeTab(i); });
 
+  auto disconnectTab = [&](int i) {
+    if (busy() || i < 0 || i >= (int)g_tabs.size()) return;
+    auto & tab = g_tabs[i];
+    if (!tab.isConnected) return;
+
+    if (tab.engineIndex >= 0) {
+      int closedIdx = tab.engineIndex;
+      engine::closeSession(closedIdx);
+      for (auto & t : g_tabs) {
+        if (t.engineIndex > closedIdx) t.engineIndex--;
+      }
+      tab.engineIndex = -1;
+    }
+    tab.isConnected = false;
+    tab.remotePath = right->path();
+    tab.localPath = left->path();
+
+    tabBar->setTabIcon(i, makeTabIcon(tab.tabColor, false));
+    tabBar->setTabText(i, QString("[Disconnected] %1").arg(tab.label));
+
+    if (curTab == i) {
+      right->setRemote(QString("[Disconnected] %1").arg(tab.label));
+      actDisconnect->setEnabled(true);
+      actDisconnect->setToolTip("Reconnect Session (Ctrl+R)");
+      window.statusBar()->showMessage(QString("Disconnected from %1 — Press Ctrl+R or Right-click Tab to Reconnect").arg(tab.label));
+      log(QString("Disconnected from %1.").arg(tab.label));
+      updateStatuses();
+    }
+  };
+
+  auto reconnectTab = [&](int i) {
+    if (busy() || i < 0 || i >= (int)g_tabs.size()) return;
+    auto & tab = g_tabs[i];
+    if (tab.opts.host.empty()) return;
+    if (tab.isConnected) {
+      right->refresh();
+      return;
+    }
+    if (tab.engineIndex >= 0) {
+      int oldIdx = tab.engineIndex;
+      engine::closeSession(oldIdx);
+      for (auto & t : g_tabs) if (t.engineIndex > oldIdx) t.engineIndex--;
+      tab.engineIndex = -1;
+    }
+    tabBar->setCurrentIndex(i);
+    window.statusBar()->showMessage(QString("Reconnecting to %1\xE2\x80\xA6").arg(tab.label));
+    log(QString("Reconnecting to %1 \xE2\x80\xA6").arg(tab.label));
+    connectWith(tab.opts, tab.siteName, i);
+  };
+
+  auto addSessionTab = [&](const QString & label, const engine::ConnectOptions & o, const QString & siteName, const QString & remotePath) {
+    tabSwitching = true;
+    int i = -1;
+    QColor color;
+    if (!siteName.isEmpty()) {
+      QString hex = makeSettings().value("siteColor/" + siteName).toString();
+      if (!hex.isEmpty()) color = QColor(hex);
+    }
+    if (g_tabs.size() == 1 && g_tabs[0].label == "Local" && !g_tabs[0].isConnected && g_tabs[0].opts.host.empty()) {
+      g_tabs[0].label = label;
+      g_tabs[0].siteName = siteName;
+      g_tabs[0].opts = o;
+      g_tabs[0].isConnected = true;
+      g_tabs[0].engineIndex = engine::activeSession();
+      g_tabs[0].remotePath = remotePath;
+      g_tabs[0].localPath = left->path();
+      g_tabs[0].tabColor = color;
+      tabBar->setTabText(0, label);
+      tabBar->setTabIcon(0, makeTabIcon(color, true));
+      if (color.isValid()) tabBar->setTabTextColor(0, color.darker(130));
+      i = 0;
+    } else {
+      SessionTabInfo nt;
+      nt.label = label;
+      nt.siteName = siteName;
+      nt.opts = o;
+      nt.isConnected = true;
+      nt.engineIndex = engine::activeSession();
+      nt.remotePath = remotePath;
+      nt.localPath = left->path();
+      nt.tabColor = color;
+      i = tabBar->addTab(makeTabIcon(color, true), label);
+      if (color.isValid()) tabBar->setTabTextColor(i, color.darker(130));
+      g_tabs.push_back(nt);
+    }
+    tabBar->setCurrentIndex(i);
+    curTab = i;
+    tabRow->setVisible(true);
+    tabSwitching = false;
+  };
+
   //--- operations ---------------------------------------------------------
-  // After a successful connect (interactive or scripted): show the session in the remote panel.
-  static engine::ConnectOptions connOpts;   // the active session's options (Open Terminal, copy URL)
-  auto sessionOpened = [&](const engine::ConnectOptions & o, const engine::ConnectResult & r, const QString & siteName = QString()) {
+  auto sessionOpened = [&](const engine::ConnectOptions & o, const engine::ConnectResult & r, const QString & siteName = QString(), int targetTabIndex = -1) {
     QString tabLabel = siteName.isEmpty() ? QString("%1@%2").arg(u8(o.user), u8(o.host)) : siteName;
     right->setRemote(tabLabel + " \xE2\x80\x94 " + protocolName(o.protocol));
     remoteHome = u8(r.currentDir);
@@ -1777,12 +2022,31 @@ int main(int argc, char ** argv)
     }
 
     actDisconnect->setEnabled(true);
+    actDisconnect->setToolTip("Disconnect Session (Ctrl+D)");
     window.setWindowTitle(QString("%1 \xE2\x80\x93 %2 \xE2\x80\x93 PosixSCP").arg(targetRemote, tabLabel));
     QString route = routeSummary(o);
     log("Connected" + (route.isEmpty() ? QString() : " (" + route + ")") + ". Remote directory: " + targetRemote);
-    addSessionTab(tabLabel);   // open a tab for this session
+
+    if (targetTabIndex >= 0 && targetTabIndex < (int)g_tabs.size()) {
+      auto & t = g_tabs[targetTabIndex];
+      t.isConnected = true;
+      t.engineIndex = engine::activeSession();
+      t.opts = o;
+      t.siteName = siteName;
+      t.remotePath = targetRemote;
+      t.localPath = left->path();
+      tabBar->setTabIcon(targetTabIndex, makeTabIcon(t.tabColor, true));
+      tabBar->setTabText(targetTabIndex, t.label);
+      if (t.tabColor.isValid()) tabBar->setTabTextColor(targetTabIndex, t.tabColor.darker(130));
+      curTab = targetTabIndex;
+      tabBar->setCurrentIndex(targetTabIndex);
+    } else {
+      addSessionTab(tabLabel, o, siteName, targetRemote);
+    }
+    updateStatuses();
   };
-  auto connectWith = [&](const engine::ConnectOptions & o, const QString & siteName = QString()) -> bool {
+
+  connectWithTarget = [&](const engine::ConnectOptions & o, const QString & siteName, int targetTabIndex) -> bool {
     window.statusBar()->showMessage("Connecting\xE2\x80\xA6");
     QString route = routeSummary(o);
     log(QString("Connecting to %1:%2%3 \xE2\x80\xA6").arg(u8(o.host)).arg(o.port).arg(route.isEmpty() ? QString() : " via " + route));
@@ -1797,10 +2061,10 @@ int main(int argc, char ** argv)
       dlg.addStep(QString::fromUtf8(text.c_str()));
     });
 
-    // Remember where the current tab is before another session takes over the panels (it used to
-    // come back at the directory it was opened in, not the one the user had navigated to).
-    if (curTab >= 0 && curTab < tabBar->count() && right->isRemote())
-      tabBar->setTabData(curTab, QStringList{ right->path(), left->path() });
+    if (curTab >= 0 && curTab < (int)g_tabs.size()) {
+      g_tabs[curTab].remotePath = right->path();
+      g_tabs[curTab].localPath = left->path();
+    }
     engine::ConnectResult r = engine::connect(o);
     engine::setInformationCallback(nullptr);
     dlg.close();
@@ -1812,9 +2076,10 @@ int main(int argc, char ** argv)
       window.statusBar()->showMessage("Connection failed");
       return false;
     }
-    sessionOpened(o, r, siteName);
+    sessionOpened(o, r, siteName, targetTabIndex);
     return true;
   };
+
   auto doConnect = [&] {
     if (busy()) return;
     LoginParams lp = showLoginDialog(&window);
@@ -1823,25 +2088,206 @@ int main(int argc, char ** argv)
       for (const QString & sName : lp.workspaceSites) {
         engine::ConnectOptions wo;
         if (loadSite(sName, wo)) {
-          connectWith(wo, sName);
+          connectWith(wo, sName, -1);
         }
       }
       return;
     }
     if (lp.o.host.empty()) { appMessage(&window, "Login", "Please enter a host name."); return; }
-    connectWith(lp.o, lp.siteName);
+    connectWith(lp.o, lp.siteName, -1);
   };
+
   auto doDisconnect = [&] {
     if (busy()) return;
-    if (tabBar->count() > 0) { closeTab(tabBar->currentIndex()); window.statusBar()->showMessage("Disconnected"); log("Disconnected."); return; }
-    engine::disconnectSftp();
-    right->setLocal();
-    right->navigate(u8(engine::homeDir()));
-    actDisconnect->setEnabled(false);
-    window.setWindowTitle("PosixSCP");
-    window.statusBar()->showMessage("Disconnected");
-    log("Disconnected.");
+    if (curTab >= 0 && curTab < (int)g_tabs.size()) {
+      if (g_tabs[curTab].isConnected) {
+        disconnectTab(curTab);
+      } else if (!g_tabs[curTab].opts.host.empty()) {
+        reconnectTab(curTab);
+      }
+    }
   };
+
+  //--- Tab bar WinSCP context menu & interactions ---------------------------
+  QObject::connect(tabBar, &QTabBar::customContextMenuRequested, [&](const QPoint & pos) {
+    int tabIdx = tabBar->tabAt(pos);
+    if (tabIdx < 0 || tabIdx >= (int)g_tabs.size()) return;
+    auto & tab = g_tabs[tabIdx];
+
+    QMenu menu(&window);
+
+    // 1. Close Tab
+    menu.addAction(QIcon(":/tb_disconnect.png"), "Close Tab\tShift+Ctrl+D", [&]{
+      closeTab(tabIdx);
+    });
+
+    // 2. Duplicate Tab
+    menu.addAction(QIcon(":/menu_duplicate.png"), "Duplicate Tab", [&]{
+      if (!tab.opts.host.empty()) {
+        connectWith(tab.opts, tab.siteName, -1);
+      }
+    });
+
+    // 3. Rename Tab
+    menu.addAction("Rename Tab\xE2\x80\xA6", [&]{
+      bool ok = false;
+      QString newName = QInputDialog::getText(&window, "Rename Tab", "Tab Name:", QLineEdit::Normal, tab.label, &ok);
+      if (ok && !newName.trimmed().isEmpty()) {
+        tab.label = newName.trimmed();
+        tabBar->setTabText(tabIdx, tab.isConnected ? tab.label : QString("[Disconnected] %1").arg(tab.label));
+        if (curTab == tabIdx) updateStatuses();
+      }
+    });
+
+    // 4. Color >
+    auto * colorMenu = menu.addMenu("Color");
+    auto * actDefColor = colorMenu->addAction("Default", [&]{
+      tab.tabColor = QColor();
+      tabBar->setTabIcon(tabIdx, makeTabIcon(tab.tabColor, tab.isConnected));
+      tabBar->setTabTextColor(tabIdx, QColor());
+      if (!tab.siteName.isEmpty()) makeSettings().remove("siteColor/" + tab.siteName);
+    });
+    if (!tab.tabColor.isValid()) { actDefColor->setCheckable(true); actDefColor->setChecked(true); }
+    colorMenu->addSeparator();
+
+    for (const auto & c : kTabColors) {
+      QPixmap px(16, 16);
+      px.fill(QColor(c.hex));
+      QPainter p(&px);
+      p.setPen(QColor(0, 0, 0, 80));
+      p.drawRect(0, 0, 15, 15);
+      p.end();
+
+      QAction * a = colorMenu->addAction(QIcon(px), c.name, [&, hex=c.hex]{
+        tab.tabColor = QColor(hex);
+        tabBar->setTabIcon(tabIdx, makeTabIcon(tab.tabColor, tab.isConnected));
+        tabBar->setTabTextColor(tabIdx, tab.tabColor.darker(130));
+        if (!tab.siteName.isEmpty()) makeSettings().setValue("siteColor/" + tab.siteName, hex);
+      });
+      if (tab.tabColor.isValid() && tab.tabColor == QColor(c.hex)) {
+        a->setCheckable(true);
+        a->setChecked(true);
+      }
+    }
+    colorMenu->addSeparator();
+    colorMenu->addAction("More Colors\xE2\x80\xA6", [&]{
+      QColor chosen = QColorDialog::getColor(tab.tabColor.isValid() ? tab.tabColor : Qt::blue, &window, "Select Tab Color");
+      if (chosen.isValid()) {
+        tab.tabColor = chosen;
+        tabBar->setTabIcon(tabIdx, makeTabIcon(tab.tabColor, tab.isConnected));
+        tabBar->setTabTextColor(tabIdx, tab.tabColor.darker(130));
+        if (!tab.siteName.isEmpty()) makeSettings().setValue("siteColor/" + tab.siteName, chosen.name());
+      }
+    });
+
+    menu.addSeparator();
+
+    // 5. Disconnect / Reconnect Session
+    if (tab.isConnected) {
+      menu.addAction(QIcon(":/tb_disconnect.png"), "Disconnect Session", [&]{
+        disconnectTab(tabIdx);
+      });
+    } else {
+      menu.addAction(QIcon(":/tb_refresh.png"), "Reconnect Session\tCtrl+R", [&]{
+        reconnectTab(tabIdx);
+      });
+    }
+
+    // 6. Save Session as Site...
+    menu.addAction(QIcon(":/site.png"), "Save Session as Site\xE2\x80\xA6", [&]{
+      bool ok = false;
+      QString sName = QInputDialog::getText(&window, "Save Session as Site", "Site Name:", QLineEdit::Normal, tab.siteName.isEmpty() ? tab.label : tab.siteName, &ok);
+      if (ok && !sName.trimmed().isEmpty()) {
+        saveSite(sName.trimmed(), tab.opts);
+        window.statusBar()->showMessage(QString("Saved site '%1'").arg(sName.trimmed()));
+      }
+    });
+
+    // 7. Server/Protocol Information
+    menu.addAction("Server/Protocol Information\xE2\x80\xA6", [&]{
+      QString info = QString(
+        "<b>Session:</b> %1<br>"
+        "<b>Host:</b> %2:%3<br>"
+        "<b>User:</b> %4<br>"
+        "<b>Protocol:</b> %5<br>"
+        "<b>Status:</b> %6<br>"
+        "<b>Remote Path:</b> %7<br>"
+        "<b>Local Path:</b> %8")
+        .arg(tab.label)
+        .arg(u8(tab.opts.host)).arg(tab.opts.port)
+        .arg(u8(tab.opts.user))
+        .arg(protocolName(tab.opts.protocol))
+        .arg(tab.isConnected ? "<font color='green'>Connected</font>" : "<font color='red'>Disconnected</font>")
+        .arg(tab.remotePath.isEmpty() ? "/" : tab.remotePath)
+        .arg(tab.localPath.isEmpty() ? u8(engine::homeDir()) : tab.localPath);
+      QMessageBox::information(&window, "Server/Protocol Information", info);
+    });
+
+    // 8. Generate Session URL/Code...
+    menu.addAction("Generate Session URL/Code\xE2\x80\xA6", [&]{
+      QString proto = protocolName(tab.opts.protocol).toLower();
+      QString url = QString("%1://%2@%3:%4%5")
+        .arg(proto, u8(tab.opts.user), u8(tab.opts.host))
+        .arg(tab.opts.port)
+        .arg(tab.remotePath.isEmpty() ? "/" : tab.remotePath);
+      QApplication::clipboard()->setText(url);
+      QMessageBox::information(&window, "Generate Session URL", QString("Session URL copied to clipboard:\n\n%1").arg(url));
+    });
+
+    menu.addSeparator();
+
+    // 9. New Tab (Ctrl+T) >
+    auto * newTabM = menu.addMenu(QIcon(":/tb_new_tab.png"), "New Tab\tCtrl+T");
+    newTabM->addAction("Remote Tab", doConnect);
+    newTabM->addAction("Local Tab\tShift+Ctrl+T", [&]{
+      SessionTabInfo lt;
+      lt.label = "Local";
+      lt.isConnected = false;
+      lt.engineIndex = -1;
+      lt.localPath = left->path();
+      lt.remotePath = u8(engine::homeDir());
+      int ni = tabBar->addTab(makeTabIcon(QColor(), true), "Local");
+      g_tabs.push_back(lt);
+      tabBar->setCurrentIndex(ni);
+      right->setLocal();
+      right->navigate(lt.remotePath);
+    });
+
+    // 10. Sites >
+    auto * sitesMenu = menu.addMenu(QIcon(":/site.png"), "Sites");
+    sitesMenu->addAction("Site Manager\xE2\x80\xA6", doConnect);
+    QStringList sites = savedSiteNames();
+    if (!sites.isEmpty()) {
+      sitesMenu->addSeparator();
+      for (const QString & s : sites) {
+        sitesMenu->addAction(QIcon(":/site.png"), s, [&, s]{
+          engine::ConnectOptions o;
+          if (loadSite(s, o)) connectWith(o, s, -1);
+        });
+      }
+    }
+
+    // 11. Tabs list
+    auto * tabsMenu = menu.addMenu("Tabs");
+    for (int t = 0; t < (int)g_tabs.size(); ++t) {
+      QAction * a = tabsMenu->addAction(g_tabs[t].label, [&, t]{
+        tabBar->setCurrentIndex(t);
+      });
+      a->setCheckable(true);
+      if (t == curTab) a->setChecked(true);
+    }
+
+    menu.exec(tabBar->mapToGlobal(pos));
+  });
+
+  // Double click tab to reconnect if disconnected
+  QObject::connect(tabBar, &QTabBar::tabBarDoubleClicked, [&](int idx) {
+    if (idx >= 0 && idx < (int)g_tabs.size()) {
+      if (!g_tabs[idx].isConnected && !g_tabs[idx].opts.host.empty()) {
+        reconnectTab(idx);
+      }
+    }
+  });
 
   // Open a system terminal with an ssh command to the current server (the "open in PuTTY" of Windows).
   auto doOpenTerminal = [&] {
@@ -3248,15 +3694,14 @@ int main(int argc, char ** argv)
 
   auto * sessionGlobeMenu = new QMenu(&window);
   sessionGlobeMenu->addAction("New Session\xE2\x80\xA6\tCtrl+N", doConnect);
-  sessionGlobeMenu->addAction("Reconnect", [&]{
-    if (connSsh && !connHost.isEmpty()) {
-      QString curLabel = (tabBar->count() > 0 && curTab >= 0 && curTab < tabBar->count()) ? tabBar->tabText(curTab) : QString();
-      connectWith(connOpts, curLabel);
+  sessionGlobeMenu->addAction("Reconnect\tCtrl+R", [&]{
+    if (curTab >= 0 && curTab < (int)g_tabs.size()) {
+      reconnectTab(curTab);
     } else {
       doConnect();
     }
   });
-  sessionGlobeMenu->addAction("Disconnect", doDisconnect);
+  sessionGlobeMenu->addAction("Disconnect\tCtrl+D", doDisconnect);
   QObject::connect(actGlobe, &QAction::triggered, [&, sessionGlobeMenu]{
     sessionGlobeMenu->exec(QCursor::pos());
   });
@@ -3266,10 +3711,22 @@ int main(int argc, char ** argv)
   auto updateNewTabMenu = [&, newTabMenu] {
     newTabMenu->clear();
     newTabMenu->addAction("New Session\xE2\x80\xA6\tCtrl+N", doConnect);
+    newTabMenu->addAction("New Local Tab", [&]{
+      SessionTabInfo lt;
+      lt.label = "Local";
+      lt.isConnected = false;
+      lt.engineIndex = -1;
+      lt.localPath = left->path();
+      lt.remotePath = u8(engine::homeDir());
+      int ni = tabBar->addTab(makeTabIcon(QColor(), true), "Local");
+      g_tabs.push_back(lt);
+      tabBar->setCurrentIndex(ni);
+      right->setLocal();
+      right->navigate(lt.remotePath);
+    });
     newTabMenu->addAction("Duplicate Session", [&]{
-      if (engine::remoteConnected()) {
-        QString curLabel = (tabBar->count() > 0 && curTab >= 0 && curTab < tabBar->count()) ? tabBar->tabText(curTab) : QString();
-        connectWith(connOpts, curLabel);
+      if (curTab >= 0 && curTab < (int)g_tabs.size() && !g_tabs[curTab].opts.host.empty()) {
+        connectWith(g_tabs[curTab].opts, g_tabs[curTab].siteName, -1);
       }
     });
     QStringList sites = savedSiteNames();
@@ -3278,7 +3735,7 @@ int main(int argc, char ** argv)
       for (const QString & s : sites) {
         newTabMenu->addAction(QIcon(":/site.png"), s, [&, s]{
           engine::ConnectOptions o;
-          if (loadSite(s, o)) connectWith(o, s);
+          if (loadSite(s, o)) connectWith(o, s, -1);
         });
       }
     }
@@ -3321,8 +3778,18 @@ int main(int argc, char ** argv)
     window.addAction(a); }
   // WinSCP keyboard set. Qt::CTRL auto-maps to Command on macOS and Ctrl on Linux/Windows, so these
   // are faithful on Linux and native on mac with no per-OS code. F-keys are identical everywhere.
-  shortcut(Qt::CTRL | Qt::Key_R, [&]{ active->refresh(); });               // refresh
-  shortcut(QKeySequence::Refresh, [&]{ active->refresh(); });
+  // Note: WinSCP uses Ctrl+R for refresh / reconnect. Do NOT bind QKeySequence::Refresh as standard key sequence
+  // maps to F5 on Linux/X11, which would collide with F5 Copy and cause ambiguous shortcut suppression.
+  shortcut(Qt::CTRL | Qt::Key_R, [&]{
+    if (curTab >= 0 && curTab < (int)g_tabs.size() && !g_tabs[curTab].isConnected && !g_tabs[curTab].opts.host.empty()) {
+      reconnectTab(curTab);
+    } else {
+      active->refresh();
+    }
+  });
+  shortcut(Qt::SHIFT | Qt::CTRL | Qt::Key_D, [&]{ if (curTab >= 0) closeTab(curTab); });
+  shortcut(Qt::CTRL | Qt::Key_W, [&]{ if (curTab >= 0) closeTab(curTab); });
+  shortcut(Qt::CTRL | Qt::Key_D, doDisconnect);               // refresh
   shortcut(Qt::ALT | Qt::Key_Left,  [&]{ active->goBack(); });             // history back
   shortcut(Qt::ALT | Qt::Key_Right, [&]{ active->goForward(); });          // history forward
   shortcut(Qt::ALT | Qt::Key_Up,    [&]{ active->goUp(); });               // parent dir
