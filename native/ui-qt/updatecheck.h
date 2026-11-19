@@ -1,7 +1,7 @@
 //---------------------------------------------------------------------------
 // updatecheck.h — "a newer version is available" notice.
 //
-// The ONLY network request FreeSCP makes on its own: one GET for the latest release of the project
+// The ONLY network request PosixSCP makes on its own: one GET for the latest release of the project
 // (GitHub's public API), at most once a day, with no identifier, no version and no system
 // information in it. It can be turned off (Preferences > Environment). Nothing is downloaded or
 // installed: "Update" opens the releases page in the browser.

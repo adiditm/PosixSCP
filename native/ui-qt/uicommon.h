@@ -27,7 +27,7 @@ inline bool uiScripted()
       || !qEnvironmentVariableIsEmpty("WINSCP_DIALOG_SHOTS") || !qEnvironmentVariableIsEmpty("WINSCP_UITEST");
 }
 
-// App-branded message box: shows the FreeSCP icon (like a native macOS NSAlert) instead of a generic
+// App-branded message box: shows the PosixSCP icon (like a native macOS NSAlert) instead of a generic
 // severity icon, so alerts never look empty/unbranded. Returns the clicked button.
 // In scripted runs it does not block: the text goes to the diagnostics output and the default
 // button (or the first "positive" one) is returned.

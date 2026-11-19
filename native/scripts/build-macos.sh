@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build FreeSCP for macOS (Apple Silicon, dev build — not signed/notarized).
+# Build PosixSCP for macOS (Apple Silicon, dev build — not signed/notarized).
 # For a distributable signed+notarized .app use release-macos.sh instead.
 #
 # Requires Xcode CLT (clang), cmake, ninja, and Qt6 via Homebrew:
@@ -23,6 +23,6 @@ cmake --build "$BUILD"
 
 echo
 echo "Built ($BUILD_TYPE):"
-echo "  GUI:     $BUILD/ui-qt/winscp-qt.app"
+echo "  GUI:     $BUILD/ui-qt/PosixSCP.app"
 echo "  harness: $BUILD/harness/winscp-harness"
-echo "Run the GUI:  open $BUILD/ui-qt/winscp-qt.app"
+echo "Run the GUI:  open $BUILD/ui-qt/PosixSCP.app"

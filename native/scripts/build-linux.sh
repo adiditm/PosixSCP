@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build FreeSCP for Linux, x86-64 or ARM64 (dev build — package with package-linux.sh).
+# Build PosixSCP for Linux, x86-64 or ARM64 (dev build — package with package-linux.sh).
 #
 # Requires clang (the engine needs -fshort-wchar / -fms-extensions / __declspec(property);
 # gcc cannot build it) plus cmake, ninja, Qt6, OpenSSL. On Debian/Ubuntu:
@@ -23,6 +23,6 @@ cmake --build "$BUILD"
 
 echo
 echo "Built ($BUILD_TYPE):"
-echo "  GUI:     $BUILD/ui-qt/winscp-qt"
+echo "  GUI:     $BUILD/ui-qt/posixscp"
 echo "  harness: $BUILD/harness/winscp-harness"
-echo "Run the GUI:  $BUILD/ui-qt/winscp-qt"
+echo "Run the GUI:  $BUILD/ui-qt/posixscp"

@@ -4,9 +4,9 @@
 # notarize the result with release-macos.sh.
 #
 # Output (native/build-universal/dist/):
-#   FreeSCP.app                 the staged bundle (Qt deployed, not signed)
+#   PosixSCP.app                 the staged bundle (Qt deployed, not signed)
 #   winscp-harness              the engine test harness (universal), for end-to-end checks
-#   FreeSCP-macOS-unsigned.tar  both of the above (tar keeps the framework symlinks intact)
+#   PosixSCP-macOS-unsigned.tar  both of the above (tar keeps the framework symlinks intact)
 #
 # Usage: native/scripts/build-macos-universal.sh
 set -euo pipefail

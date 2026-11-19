@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Sign + notarize a staged FreeSCP.app and produce the release zips.
+# Sign + notarize a staged PosixSCP.app and produce the release zips.
 #
 # Input: the UNSIGNED universal bundle made by build-macos-universal.sh - locally
-# (native/build-universal/dist/FreeSCP.app) or by the "macOS" GitHub Actions workflow
-# (artifact FreeSCP-macOS-unsigned -> untar it and pass the path).
+# (native/build-universal/dist/PosixSCP.app) or by the "macOS" GitHub Actions workflow
+# (artifact PosixSCP-macOS-unsigned -> untar it and pass the path).
 #
 # Prereqs:
 #   - A "Developer ID Application" cert in the keychain (see `security find-identity -v -p codesigning`).
 #   - Notarization creds in env or an env file (default: ../roBrowserLegacy/applications/electron/.env.notarize):
 #       APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
 #
-# Usage: native/scripts/release-macos.sh <version> [path/to/unsigned/FreeSCP.app]
-# Output: native/build/release/FreeSCP-macOS-universal.zip (+ a copy under the pre-0.2 asset name
-#         FreeSCP-macOS-arm64.zip, which old links and the 0.1 website point at).
+# Usage: native/scripts/release-macos.sh <version> [path/to/unsigned/PosixSCP.app]
+# Output: native/build/release/PosixSCP-macOS-universal.zip (+ a copy under the pre-0.2 asset name
+#         PosixSCP-macOS-arm64.zip, which old links and the 0.1 website point at).
 set -euo pipefail
 
-VERSION="${1:?usage: release-macos.sh <version> [FreeSCP.app]}"
+VERSION="${1:?usage: release-macos.sh <version> [PosixSCP.app]}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-APP_SRC="${2:-$ROOT/native/build-universal/dist/FreeSCP.app}"
+APP_SRC="${2:-$ROOT/native/build-universal/dist/PosixSCP.app}"
 STAGE="$ROOT/native/build/release"
-APP="$STAGE/FreeSCP.app"
+APP="$STAGE/PosixSCP.app"
 ENTITLEMENTS="$ROOT/native/ui-qt/entitlements.mac.plist"
 # Signing identity — override with SIGN_IDENTITY env. (A Team ID is not secret; it's embedded in every
 # signed/notarized binary. Set your own to build your own signed copy.)
@@ -33,7 +33,7 @@ HAVE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "
 [ -f "$ENVFILE" ] && set -a && . "$ENVFILE" && set +a || true
 : "${APPLE_ID:?APPLE_ID not set}" "${APPLE_APP_SPECIFIC_PASSWORD:?}" "${APPLE_TEAM_ID:?}"
 
-echo "==> staging FreeSCP.app $VERSION ($(lipo -archs "$APP_SRC/Contents/MacOS/winscp-qt"))"
+echo "==> staging PosixSCP.app $VERSION ($(lipo -archs "$APP_SRC/Contents/MacOS/winscp-qt"))"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP_SRC" "$APP"
 xattr -cr "$APP"
@@ -49,9 +49,9 @@ codesign --force --deep --options runtime --timestamp \
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 echo "==> notarizing"
-# Stable asset name — the website links to releases/latest/download/FreeSCP-macOS-universal.zip,
+# Stable asset name — the website links to releases/latest/download/PosixSCP-macOS-universal.zip,
 # so the filename must NOT carry the version (else the download 404s).
-ZIP="$STAGE/FreeSCP-macOS-universal.zip"
+ZIP="$STAGE/PosixSCP-macOS-universal.zip"
 /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
 xcrun notarytool submit "$ZIP" \
   --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
@@ -60,5 +60,5 @@ echo "==> stapling + repackaging"
 xcrun stapler staple "$APP"
 spctl -a -vvv "$APP" 2>&1 | head -3 || true
 rm -f "$ZIP"; /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
-cp "$ZIP" "$STAGE/FreeSCP-macOS-arm64.zip"   # legacy asset name (same universal app)
-echo "==> artifacts: $ZIP  (+ FreeSCP-macOS-arm64.zip)"
+cp "$ZIP" "$STAGE/PosixSCP-macOS-arm64.zip"   # legacy asset name (same universal app)
+echo "==> artifacts: $ZIP  (+ PosixSCP-macOS-arm64.zip)"

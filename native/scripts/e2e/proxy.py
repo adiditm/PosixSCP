@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal logging proxy for the FreeSCP end-to-end tests (standard library only).
+"""Minimal logging proxy for the PosixSCP end-to-end tests (standard library only).
 
   proxy.py socks  <port> <logfile> [user password]    SOCKS4 / SOCKS5 (optional user/password auth)
   proxy.py http   <port> <logfile> [user password [close]]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the Linux build into a self-contained FreeSCP-Linux-<arch>.AppImage (x86_64 or aarch64,
+# Package the Linux build into a self-contained PosixSCP-Linux-<arch>.AppImage (x86_64 or aarch64,
 # whatever this machine is).
 #
 # Bundles the Qt6 runtime + the xcb platform plugin (and their shared-lib closure) so the
@@ -18,8 +18,8 @@ BIN="$BUILD/ui-qt/posixscp"
 ARCH="$(uname -m)"                      # x86_64 | aarch64 (also the AppImage architecture name)
 QTLIB="/usr/lib/${ARCH}-linux-gnu"
 QTPLUGINS="$QTLIB/qt6/plugins"
-APPDIR="$BUILD/FreeSCP.AppDir"
-OUT="$ROOT/FreeSCP-Linux-${ARCH}.AppImage"
+APPDIR="$BUILD/PosixSCP.AppDir"
+OUT="$ROOT/PosixSCP-Linux-${ARCH}.AppImage"
 
 [ -x "$BIN" ] || { echo "build first: native/scripts/build-linux.sh"; exit 1; }
 command -v appimagetool >/dev/null || { echo "appimagetool not on PATH"; exit 1; }

@@ -4,7 +4,7 @@
 
 <h1 align="center">PosixSCP</h1>
 
-<p align="center"><b>A native macOS &amp; Linux client for SFTP, SCP, and FTP — based on WinSCP &amp; FreeSCP.</b></p>
+<p align="center"><b>A native macOS &amp; Linux client for SFTP, SCP, and FTP — bringing WinSCP to POSIX.</b></p>
 
 <p align="center">
   💻 <a href="https://github.com/adiditm/PosixSCP">GitHub Repository</a> ·
@@ -44,7 +44,7 @@ WebDAV, a dual-pane Commander, a built-in editor, synchronized browsing. But it 
 on **Windows**. On macOS and Linux that gap has stayed open for ~20 years: you end up juggling
 Cyberduck, FileZilla, `sftp`, sshfs… none of them *is* WinSCP.
 
-**FreeSCP closes that gap** by running WinSCP's actual engine natively on macOS and Linux, behind a
+**PosixSCP closes that gap** by running WinSCP's actual engine natively on macOS and Linux, behind a
 faithful Qt rebuild of its interface.
 
 ## How it works (ported vs rewritten)
@@ -134,7 +134,7 @@ docs/porting       PLAN / STATUS / ROADMAP / LEARNINGS / UPSTREAM-PATCHES
 All five protocols work end-to-end (connect / list / transfer / file ops) and are exercised by the
 suites in `native/scripts` (`e2e-ssh.sh`, `e2e-features.sh`, `e2e-adversarial.sh`) against real
 servers; see `docs/porting/STATUS.md`. GPLv3, inherited from
-WinSCP. FreeSCP is an independent port and is not affiliated with or endorsed by Martin Přikryl /
+WinSCP. PosixSCP is an independent port and is not affiliated with or endorsed by Martin Přikryl /
 WinSCP.
 
 ---
