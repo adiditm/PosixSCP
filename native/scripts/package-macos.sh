@@ -72,8 +72,15 @@ package_arch() {
   done
   if [ -s "$bad" ]; then echo "    not thinned to $arch:"; cat "$bad"; rm -f "$bad"; exit 1; fi
   rm -f "$bad"
-  otool -l "$bin" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks' \
-    || { echo "    missing @executable_path/../Frameworks rpath"; exit 1; }
+
+  # Qt must be found through the bundle-relative rpath. macdeployqt normally installs it; make sure,
+  # because an absolute build-machine rpath (seen in older releases) makes the app dead elsewhere.
+  if ! otool -l "$bin" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks'; then
+    echo "    adding @executable_path/../Frameworks rpath"
+    install_name_tool -add_rpath @executable_path/../Frameworks "$bin"
+    codesign --force --deep --sign - "$app" >/dev/null
+    codesign --verify --deep --strict "$app" >/dev/null
+  fi
 
   # The thinned bundle must not reference anything outside itself/the system.
   if otool -L "$bin" "$app"/Contents/Frameworks/*.framework/Versions/A/Qt* 2>/dev/null \

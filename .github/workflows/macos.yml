@@ -62,10 +62,16 @@ jobs:
           ditto -x -k dist/PosixSCP-macos-intel.zip /tmp/dl-intel
           test "$(lipo -archs /tmp/dl-arm64/PosixSCP.app/Contents/MacOS/PosixSCP)" = arm64
           test "$(lipo -archs /tmp/dl-intel/PosixSCP.app/Contents/MacOS/PosixSCP)" = x86_64
+          # Prove portability: hide the build-time Qt so only the bundled frameworks can satisfy it.
+          # (Without this, an absolute rpath back into build-deps would still work on this runner.)
+          mv native/build-deps/qt native/build-deps/qt.hidden
+          trap 'mv native/build-deps/qt.hidden native/build-deps/qt' EXIT
           arch -arm64 env WINSCP_NO_AUTOLOGIN=1 WINSCP_SHOT=/tmp/pack-arm64.png \
             /tmp/dl-arm64/PosixSCP.app/Contents/MacOS/PosixSCP
           arch -x86_64 env WINSCP_NO_AUTOLOGIN=1 WINSCP_SHOT=/tmp/pack-intel.png \
             /tmp/dl-intel/PosixSCP.app/Contents/MacOS/PosixSCP
+          mv native/build-deps/qt.hidden native/build-deps/qt
+          trap - EXIT
           test -s /tmp/pack-arm64.png && test -s /tmp/pack-intel.png
 
       - uses: actions/upload-artifact@v4
