@@ -912,23 +912,29 @@ GUI offscreen: connect, 3-item queued download over parallel connections, exit c
   Windows width.
 - Release artifacts (v0.1.1) predate all of the above; a new signed build has not been cut.
 
-## Release pipeline for v0.2.0 (2026-11-13)
+## Release pipeline for v1.0.0-beta2 (2026-11-20)
 
-Four targets, three files (see the README download table):
+Four targets, six assets (see the README download table):
 
 | Asset | Built by | Tested by |
 |---|---|---|
-| `FreeSCP-macOS-universal.zip` (arm64 + x86_64, macOS 12+) | `.github/workflows/macos.yml` → `native/scripts/build-macos-universal.sh` (official Qt via aqtinstall, static OpenSSL from source); signed + notarized locally with `native/scripts/release-macos.sh <version> <FreeSCP.app>` | CI: ctest natively and under Rosetta, launch of the staged bundle on both architectures. Locally: `native/scripts/e2e-ssh.sh` on the signed app, natively and with `E2E_RUN="arch -x86_64"` |
-| `FreeSCP-Linux-x86_64.AppImage`, `FreeSCP-Linux-aarch64.AppImage` (glibc 2.35+) | `.github/workflows/linux.yml` on `ubuntu-22.04` / `ubuntu-22.04-arm` → `build-linux.sh` + `package-linux.sh`; attached to the release on `v*` tags | CI: ctest, `e2e-ssh.sh` against a local sshd (SFTP + SCP round trips, tree, failure paths, offscreen GUI), then the AppImage itself under xvfb (connect + queued download) |
+| `PosixSCP-macos-arm64.zip`, `PosixSCP-macos-intel.zip` (thin, macOS 12+) | `.github/workflows/macos.yml` → `build-macos-universal.sh` (one universal build, official Qt via aqtinstall, static OpenSSL from source) → `package-macos.sh` (lipo-thin each Mach-O, ad-hoc re-sign, rpath check) | CI: ctest natively and under Rosetta; both the staged universal bundle and each packaged thin app are launched on its own architecture with `build-deps/qt` moved away, so only the bundled frameworks can satisfy Qt |
+| `PosixSCP-linux-x86_64.tar.gz`, `PosixSCP-linux-arm64.tar.gz` (glibc 2.35+) | `.github/workflows/linux.yml` on `ubuntu-22.04` / `ubuntu-22.04-arm` → `build-linux.sh` + `package-linux-portable.sh`; attached to the release on `v*` tags | CI: ctest, `e2e-ssh.sh` against a local sshd (SFTP + SCP round trips), the full feature suite on x86-64, then the extracted tarball under Xvfb (bundled Qt, connect + real transfer) |
+| `PosixSCP-Linux-x86_64.AppImage`, `PosixSCP-Linux-aarch64.AppImage` | same jobs → `package-linux.sh` | CI: the AppImage itself under Xvfb (connect + queued download) and an HTTPS update check |
 
 Why not Homebrew for the macOS release: its Qt/OpenSSL are single-architecture and built for the
-build machine's macOS version — the v0.2 development build linked that way required macOS 26.
+build machine's macOS version — that would require the build machine's macOS on the user's Mac.
 `build-macos.sh` (Homebrew) remains the quick developer build.
 
-Release procedure: bump `FREESCP_VERSION` (native/ui-qt/CMakeLists.txt) → push → take the
-`FreeSCP-macOS-unsigned` artifact of the macOS workflow → `release-macos.sh` → run `e2e-ssh.sh` on the
-result → `gh release create vX.Y.Z --draft` with the two macOS zips → push the tag (the Linux workflow
-attaches both AppImages) → publish the release → update the version strings on the website (`gh-pages`).
+Note on the old beta1 macOS zips: they carried a single absolute rpath into the build machine's
+`build-deps/qt`, so they could not start anywhere else. `package-macos.sh` now guarantees
+`@executable_path/../Frameworks`, and the workflow proves it by hiding `build-deps/qt` before the
+launch check.
+
+Release procedure: bump `POSIXSCP_VERSION` (native/ui-qt/CMakeLists.txt) → push `main` → create the
+release (`gh release create vX.Y.Z --draft --prerelease --verify-tag`) → push the tag (both workflows
+build, test and attach their assets to that release) → download the assets into `dist/` → publish the
+release → update the version strings on the website (`gh-pages`).
 
 The app now shows a first-launch dialog (and Help → Support FreeSCP): free, GPLv3, no telemetry,
 optional Ko-fi link. "No telemetry" is literal: the engine's usage counters are never sent anywhere.
