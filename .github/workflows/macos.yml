@@ -1,6 +1,11 @@
-# Builds the universal (Apple Silicon + Intel) macOS app, unsigned. Signing and notarization need
-# the Developer ID certificate and are done afterwards with native/scripts/release-macos.sh on a
-# machine that has it (download the artifact, then: release-macos.sh <version> <path to FreeSCP.app>).
+# Builds the universal (Apple Silicon + Intel) macOS app, unsigned, then packages one thin .app per
+# architecture for the release:
+#
+#   PosixSCP-macos-arm64.zip    Apple Silicon
+#   PosixSCP-macos-intel.zip    Intel (x86_64)
+#
+# Signing and notarization need a Developer ID certificate and are done afterwards with
+# native/scripts/release-macos.sh on a machine that has one.
 name: macOS
 
 on:
@@ -10,7 +15,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   universal:
@@ -43,8 +48,39 @@ jobs:
             grep -q 'does not exist' /tmp/h.txt
           done
 
+      - name: Package per-architecture zips
+        run: |
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+                       native/build-universal/dist/PosixSCP.app/Contents/Info.plist)"
+          native/scripts/package-macos.sh "$VERSION" native/build-universal/dist/PosixSCP.app dist
+
+      - name: Launch check of the packaged (thin) apps
+        run: |
+          softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1 || true
+          rm -rf /tmp/dl-* && mkdir -p /tmp/dl-arm64 /tmp/dl-intel
+          ditto -x -k dist/PosixSCP-macos-arm64.zip /tmp/dl-arm64
+          ditto -x -k dist/PosixSCP-macos-intel.zip /tmp/dl-intel
+          test "$(lipo -archs /tmp/dl-arm64/PosixSCP.app/Contents/MacOS/PosixSCP)" = arm64
+          test "$(lipo -archs /tmp/dl-intel/PosixSCP.app/Contents/MacOS/PosixSCP)" = x86_64
+          arch -arm64 env WINSCP_NO_AUTOLOGIN=1 WINSCP_SHOT=/tmp/pack-arm64.png \
+            /tmp/dl-arm64/PosixSCP.app/Contents/MacOS/PosixSCP
+          arch -x86_64 env WINSCP_NO_AUTOLOGIN=1 WINSCP_SHOT=/tmp/pack-intel.png \
+            /tmp/dl-intel/PosixSCP.app/Contents/MacOS/PosixSCP
+          test -s /tmp/pack-arm64.png && test -s /tmp/pack-intel.png
+
       - uses: actions/upload-artifact@v4
         with:
-          name: PosixSCP-macOS-unsigned
-          path: native/build-universal/dist/PosixSCP-macOS-unsigned.tar
+          name: PosixSCP-macOS
+          path: |
+            dist/PosixSCP-macos-arm64.zip
+            dist/PosixSCP-macos-intel.zip
+            native/build-universal/dist/PosixSCP-macOS-unsigned.tar
           if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/PosixSCP-macos-arm64.zip dist/PosixSCP-macos-intel.zip --clobber

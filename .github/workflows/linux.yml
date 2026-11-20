@@ -1,8 +1,10 @@
-# Builds, tests and packages FreeSCP for Linux (x86-64 and ARM64) as AppImages.
+# Builds, tests and packages PosixSCP for Linux (x86-64 and ARM64):
+#   - a portable tarball for the release (PosixSCP-linux-<arch>.tar.gz, see the Downloads table)
+#   - a self-contained AppImage, smoke-tested with bundled Qt under Xvfb
 #
-#  - every push to a `ci-*` branch and every manual run: build + tests, AppImages kept as artifacts
-#  - a `v*` tag (or a manual run with `release_tag`): additionally attaches the AppImages to that
-#    GitHub release (the release must already exist; a draft is fine)
+#  - every push to a `ci-*` branch and every manual run: build + tests, packages kept as artifacts
+#  - a `v*` tag (or a manual run with `release_tag`): additionally attaches the tarball and the
+#    AppImage to that GitHub release (the release must already exist; a draft is fine)
 #
 # Built on Ubuntu 22.04 so the result runs on glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36, ...).
 name: Linux
@@ -11,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Attach the AppImages to this existing release tag (optional)"
+        description: "Attach the packages to this existing release tag (optional)"
         required: false
   push:
     branches: ["ci-*"]
@@ -22,7 +24,7 @@ permissions:
 
 jobs:
   appimage:
-    name: AppImage (${{ matrix.arch }})
+    name: Linux (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -103,16 +105,35 @@ jobs:
           printf '#!/bin/sh\nexec /tmp/appimagetool --appimage-extract-and-run "$@"\n' | sudo tee /usr/local/bin/appimagetool >/dev/null
           sudo chmod +x /usr/local/bin/appimagetool
           native/scripts/package-linux.sh
-          ls -la FreeSCP-Linux-${{ matrix.arch }}.AppImage
+          ls -la PosixSCP-Linux-${{ matrix.arch }}.AppImage
 
       - name: Smoke-test the AppImage itself (bundled Qt, real X server)
         run: |
-          chmod +x FreeSCP-Linux-${{ matrix.arch }}.AppImage
+          chmod +x PosixSCP-Linux-${{ matrix.arch }}.AppImage
           rm -rf /tmp/dlq
           xvfb-run -a env WINSCP_SHOT=/tmp/appimage.png \
             WINSCP_AUTOCONNECT=127.0.0.1:2222:winscp:winscp123:sftp WINSCP_AUTOXFER=hello.txt,testdir \
-            ./FreeSCP-Linux-${{ matrix.arch }}.AppImage --appimage-extract-and-run
+            ./PosixSCP-Linux-${{ matrix.arch }}.AppImage --appimage-extract-and-run
           test -s /tmp/appimage.png
+          test "$(cat /tmp/dlq/hello.txt)" = hello
+          test "$(cat /tmp/dlq/testdir/nested.txt)" = n
+
+      - name: Package the portable tarball (the release download)
+        run: |
+          native/scripts/package-linux-portable.sh dist
+          ls -la dist/PosixSCP-linux-*.tar.gz
+
+      - name: Smoke-test the portable tarball (bundled Qt, real X server)
+        run: |
+          rm -rf /tmp/portable && mkdir -p /tmp/portable
+          tar -xzf dist/PosixSCP-linux-*.tar.gz -C /tmp/portable
+          DIR="$(find /tmp/portable -maxdepth 1 -type d -name 'linux-*')"
+          test -x "$DIR/posixscp.sh"
+          rm -rf /tmp/dlq
+          xvfb-run -a env WINSCP_SHOT=/tmp/portable.png \
+            WINSCP_AUTOCONNECT=127.0.0.1:2222:winscp:winscp123:sftp WINSCP_AUTOXFER=hello.txt,testdir \
+            "$DIR/posixscp.sh"
+          test -s /tmp/portable.png
           test "$(cat /tmp/dlq/hello.txt)" = hello
           test "$(cat /tmp/dlq/testdir/nested.txt)" = n
 
@@ -122,15 +143,17 @@ jobs:
         run: |
           xvfb-run -a env WINSCP_NO_AUTOLOGIN=1 WINSCP_UITEST="wait|12000" \
             WINSCP_UPDATE_URL=https://freescp.com/update-test.json \
-            ./FreeSCP-Linux-${{ matrix.arch }}.AppImage --appimage-extract-and-run 2>&1 | tee /tmp/update-check.log | grep -a "update" || true
+            ./PosixSCP-Linux-${{ matrix.arch }}.AppImage --appimage-extract-and-run 2>&1 | tee /tmp/update-check.log | grep -a "update" || true
           grep -aq '\[update\] latest=0.0.1 current=' /tmp/update-check.log
 
       - uses: actions/upload-artifact@v4
         with:
-          name: FreeSCP-Linux-${{ matrix.arch }}
+          name: PosixSCP-Linux-${{ matrix.arch }}
           path: |
-            FreeSCP-Linux-${{ matrix.arch }}.AppImage
+            PosixSCP-Linux-${{ matrix.arch }}.AppImage
+            dist/PosixSCP-linux-*.tar.gz
             /tmp/appimage.png
+            /tmp/portable.png
           if-no-files-found: error
 
       - name: Attach to the release
@@ -138,4 +161,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
-        run: gh release upload "$TAG" FreeSCP-Linux-${{ matrix.arch }}.AppImage --clobber
+        run: |
+          gh release upload "$TAG" \
+            dist/PosixSCP-linux-*.tar.gz PosixSCP-Linux-${{ matrix.arch }}.AppImage --clobber
